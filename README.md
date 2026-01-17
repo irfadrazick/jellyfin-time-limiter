@@ -91,12 +91,12 @@ For automated monitoring, set up a cron job to run the script every 5 minutes:
 
 2. **Option A: With environment variables inline** (adjust paths and values as needed):
    ```bash
-   */5 * * * * JELLYFIN_BASE_URL="http://192.168.1.100:8096" JELLYFIN_TOKEN="your-token" JELLYFIN_USER_NAME="kodi" JELLYFIN_MAX_WATCH_TIME_MINUTES=90 /usr/bin/python3 /path/to/jellyfin_time_limiter.py >> /var/log/jellyfin-time-limiter.log 2>&1
+   */5 * * * * JELLYFIN_BASE_URL="http://192.168.1.100:8096" JELLYFIN_TOKEN="your-token" JELLYFIN_USER_NAME="kodi" JELLYFIN_MAX_WATCH_TIME_MINUTES=90 /usr/bin/python3 /opt/jellyfin-time-limiter/jellyfin_time_limiter.py >> /var/log/jellyfin-time-limiter.log 2>&1
    ```
 
 3. **Option B: Using a wrapper script** (recommended for cleaner configuration):
 
-   Create `/path/to/jellyfin-time-limiter-wrapper.sh`:
+   Create `/opt/jellyfin-time-limiter/jellyfin-time-limiter-wrapper.sh`:
    ```bash
    #!/bin/bash
    export JELLYFIN_BASE_URL="http://192.168.1.100:8096"
@@ -104,17 +104,17 @@ For automated monitoring, set up a cron job to run the script every 5 minutes:
    export JELLYFIN_USER_NAME="kodi"
    export JELLYFIN_MAX_WATCH_TIME_MINUTES=90
 
-   /usr/bin/python3 /path/to/jellyfin_time_limiter.py
+   /usr/bin/python3 /opt/jellyfin-time-limiter/jellyfin_time_limiter.py
    ```
 
    Make it executable:
    ```bash
-   chmod +x /path/to/jellyfin-time-limiter-wrapper.sh
+   chmod +x /opt/jellyfin-time-limiter/jellyfin-time-limiter-wrapper.sh
    ```
 
    Then in crontab:
    ```bash
-   */5 * * * * /path/to/jellyfin-time-limiter-wrapper.sh >> /var/log/jellyfin-time-limiter.log 2>&1
+   */5 * * * * /opt/jellyfin-time-limiter/jellyfin-time-limiter-wrapper.sh >> /var/log/jellyfin-time-limiter.log 2>&1
    ```
 
 ### Systemd Service (Alternative)
@@ -132,7 +132,7 @@ Environment="JELLYFIN_BASE_URL=http://192.168.1.100:8096"
 Environment="JELLYFIN_TOKEN=your-api-token-here"
 Environment="JELLYFIN_USER_NAME=kodi"
 Environment="JELLYFIN_MAX_WATCH_TIME_MINUTES=90"
-ExecStart=/usr/bin/python3 /path/to/jellyfin_time_limiter.py
+ExecStart=/usr/bin/python3 /opt/jellyfin-time-limiter/jellyfin_time_limiter.py
 StandardOutput=journal
 StandardError=journal
 ```
