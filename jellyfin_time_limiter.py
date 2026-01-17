@@ -10,13 +10,10 @@ JELLYFIN_MAX_WATCH_TIME_MINUTES = int(
     os.getenv("JELLYFIN_JELLYFIN_MAX_WATCH_TIME_MINUTES", "90")
 )
 USER_NAME = os.getenv("JELLYFIN_USER_NAME")
-JELLYFIN_BASE_URL = os.getenv("JELLYFIN_BASE_URL")
+JELLYFIN_BASE_URL = os.getenv("JELLYFIN_BASE_URL", "http://localhost:8096")
 JELLYFIN_TOKEN = os.getenv("JELLYFIN_TOKEN")
 
 # Validate required environment variables
-if not JELLYFIN_BASE_URL:
-    print("Error: JELLYFIN_BASE_URL environment variable is required", file=sys.stderr)
-    sys.exit(1)
 
 if not JELLYFIN_TOKEN:
     print("Error: JELLYFIN_TOKEN environment variable is required", file=sys.stderr)

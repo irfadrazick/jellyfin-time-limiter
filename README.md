@@ -37,13 +37,14 @@ The script is configured via environment variables. All variables prefixed with 
 
 ### Required Environment Variables
 
-- `JELLYFIN_BASE_URL` - Base URL of your Jellyfin server (e.g., `http://192.168.1.100:8096`)
 - `JELLYFIN_TOKEN` - API token for authentication
   - Generate from: Dashboard → API Keys → New API Key
 - `JELLYFIN_USER_NAME` - Username to monitor (e.g., `kodi`, `jellyfin`)
 
 ### Optional Environment Variables
 
+- `JELLYFIN_BASE_URL` - Base URL of your Jellyfin server (default: `http://localhost:8096`)
+  - Only required if your Jellyfin server is not running on localhost:8096
 - `JELLYFIN_MAX_WATCH_TIME_MINUTES` - Maximum watch time in minutes before disabling access (default: `90`)
 
 ## Getting Your API Token
@@ -74,9 +75,9 @@ The script is configured via environment variables. All variables prefixed with 
 Set the required environment variables and run the script:
 
 ```bash
-export JELLYFIN_BASE_URL="http://192.168.1.100:8096"
 export JELLYFIN_TOKEN="your-api-token-here"
 export JELLYFIN_USER_NAME="kodi"
+export JELLYFIN_BASE_URL="http://192.168.1.100:8096"  # Optional, defaults to http://localhost:8096
 export JELLYFIN_MAX_WATCH_TIME_MINUTES=90  # Optional, defaults to 90
 
 python3 jellyfin_time_limiter.py
@@ -93,8 +94,10 @@ For automated monitoring, set up a cron job to run the script every 5 minutes:
 
 2. **Option A: With environment variables inline** (adjust paths and values as needed):
    ```bash
-   */5 * * * * JELLYFIN_BASE_URL="http://192.168.1.100:8096" JELLYFIN_TOKEN="your-token" JELLYFIN_USER_NAME="kodi" JELLYFIN_MAX_WATCH_TIME_MINUTES=90 /usr/bin/python3 /opt/jellyfin-time-limiter/jellyfin_time_limiter.py
+   */5 * * * * JELLYFIN_TOKEN="your-token" JELLYFIN_USER_NAME="kodi" JELLYFIN_BASE_URL="http://192.168.1.100:8096" JELLYFIN_MAX_WATCH_TIME_MINUTES=90 /usr/bin/python3 /opt/jellyfin-time-limiter/jellyfin_time_limiter.py
    ```
+
+   Note: `JELLYFIN_BASE_URL` is optional if using localhost:8096
 
    Note: The script writes logs to `jellyfin_time_limiter.log` in the script directory. No redirection needed.
 
@@ -103,9 +106,9 @@ For automated monitoring, set up a cron job to run the script every 5 minutes:
    Create `/opt/jellyfin-time-limiter/jellyfin-time-limiter-wrapper.sh`:
    ```bash
    #!/bin/bash
-   export JELLYFIN_BASE_URL="http://192.168.1.100:8096"
    export JELLYFIN_TOKEN="your-api-token-here"
    export JELLYFIN_USER_NAME="kodi"
+   export JELLYFIN_BASE_URL="http://192.168.1.100:8096"  # Optional, defaults to http://localhost:8096
    export JELLYFIN_MAX_WATCH_TIME_MINUTES=90
 
    /usr/bin/python3 /opt/jellyfin-time-limiter/jellyfin_time_limiter.py
@@ -134,9 +137,9 @@ After=network.target
 
 [Service]
 Type=oneshot
-Environment="JELLYFIN_BASE_URL=http://192.168.1.100:8096"
 Environment="JELLYFIN_TOKEN=your-api-token-here"
 Environment="JELLYFIN_USER_NAME=kodi"
+Environment="JELLYFIN_BASE_URL=http://192.168.1.100:8096"
 Environment="JELLYFIN_MAX_WATCH_TIME_MINUTES=90"
 ExecStart=/usr/bin/python3 /opt/jellyfin-time-limiter/jellyfin_time_limiter.py
 StandardOutput=journal
