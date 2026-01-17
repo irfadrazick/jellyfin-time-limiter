@@ -6,12 +6,25 @@ import sys
 from datetime import datetime
 import os
 
-# Maximum watch time in minutes before disabling access
-MAX_WATCH_TIME_MINUTES = 90
-
-# Jellyfin server configuration
+JELLYFIN_MAX_WATCH_TIME_MINUTES = int(
+    os.getenv("JELLYFIN_JELLYFIN_MAX_WATCH_TIME_MINUTES", "90")
+)
+USER_NAME = os.getenv("JELLYFIN_USER_NAME")
 JELLYFIN_BASE_URL = os.getenv("JELLYFIN_BASE_URL")
 JELLYFIN_TOKEN = os.getenv("JELLYFIN_TOKEN")
+
+# Validate required environment variables
+if not JELLYFIN_BASE_URL:
+    print("Error: JELLYFIN_BASE_URL environment variable is required", file=sys.stderr)
+    sys.exit(1)
+
+if not JELLYFIN_TOKEN:
+    print("Error: JELLYFIN_TOKEN environment variable is required", file=sys.stderr)
+    sys.exit(1)
+
+if not USER_NAME:
+    print("Error: JELLYFIN_USER_NAME environment variable is required", file=sys.stderr)
+    sys.exit(1)
 
 # Initialize HTTP client
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
@@ -57,20 +70,20 @@ if response.status != 200:
     log(f"Error fetching users: {response.status}")
     sys.exit(1)
 
-kodi_user_id = None
+target_user_id = None
 
 users = json.loads(response.data.decode("utf-8"))
 
 for user in users:
-    if user["Name"] == "kodi":
-        kodi_user_id = user["Id"]
+    if user["Name"] == USER_NAME:
+        target_user_id = user["Id"]
         break
 
-if not kodi_user_id:
-    log("Error: Kodi user not found")
+if not target_user_id:
+    log(f"Error: User '{USER_NAME}' not found")
     sys.exit(1)
 
-log(f"Kodi User ID: {kodi_user_id}")
+log(f"User '{USER_NAME}' ID: {target_user_id}")
 
 # Check user activity from user_usage_stats plugin using custom query
 # Query for today's playback activity only (resets at midnight)
@@ -81,12 +94,12 @@ query_endpoint = f"/user_usage_stats/submit_custom_query?stamp={stamp}"
 today_date = datetime.now().strftime("%Y-%m-%d")
 log(f"Querying playback activity for date: {today_date}")
 
-# SQL query to get today's playback activity for kodi user
+# SQL query to get today's playback activity for target user
 # Using explicit date string to avoid timezone issues with DATE('now')
 sql_query = f"""SELECT ROWID, *
 FROM PlaybackActivity
 WHERE DATE(DateCreated) = '{today_date}'
-AND UserId = '{kodi_user_id}'
+AND UserId = '{target_user_id}'
 ORDER BY rowid DESC"""
 
 query_payload = {
@@ -121,7 +134,7 @@ else:
         total_watch_time_minutes = 0
         ENABLE_ACCESS = True  # No watch time means access should be enabled
         log(
-            f"Watch time ({total_watch_time_minutes:.1f} min) is within limit ({MAX_WATCH_TIME_MINUTES} min). Access enabled."
+            f"Watch time ({total_watch_time_minutes:.1f} min) is within limit ({JELLYFIN_MAX_WATCH_TIME_MINUTES} min). Access enabled."
         )
     elif not columns:
         log("Error: No columns found in response")
@@ -150,23 +163,23 @@ else:
 
             total_watch_time_minutes = total_watch_time_seconds / 60
             log(
-                f"Kodi user total watch time (today): {total_watch_time_minutes:.1f} minutes ({total_watch_time_seconds} seconds)"
+                f"User '{USER_NAME}' total watch time (today): {total_watch_time_minutes:.1f} minutes ({total_watch_time_seconds} seconds)"
             )
 
             # Disable access if watch time exceeds limit
-            ENABLE_ACCESS = total_watch_time_minutes < MAX_WATCH_TIME_MINUTES
+            ENABLE_ACCESS = total_watch_time_minutes < JELLYFIN_MAX_WATCH_TIME_MINUTES
 
             if not ENABLE_ACCESS:
                 log(
-                    f"Watch time ({total_watch_time_minutes:.1f} min) exceeds limit ({MAX_WATCH_TIME_MINUTES} min). Disabling access."
+                    f"Watch time ({total_watch_time_minutes:.1f} min) exceeds limit ({JELLYFIN_MAX_WATCH_TIME_MINUTES} min). Disabling access."
                 )
             else:
                 log(
-                    f"Watch time ({total_watch_time_minutes:.1f} min) is within limit ({MAX_WATCH_TIME_MINUTES} min). Access enabled."
+                    f"Watch time ({total_watch_time_minutes:.1f} min) is within limit ({JELLYFIN_MAX_WATCH_TIME_MINUTES} min). Access enabled."
                 )
 
 # Get current user policy to check if update is needed
-user_endpoint = f"/Users/{kodi_user_id}"
+user_endpoint = f"/Users/{target_user_id}"
 response = make_request("GET", user_endpoint)
 
 if response.status != 200:
@@ -212,7 +225,7 @@ if needs_update:
         policy["EnabledFolders"] = []
 
     # Update the policy
-    policy_endpoint = f"/Users/{kodi_user_id}/Policy"
+    policy_endpoint = f"/Users/{target_user_id}/Policy"
     response = make_request("POST", policy_endpoint, body=policy)
 
     if response.status != 204 and response.status != 200:
@@ -221,9 +234,9 @@ if needs_update:
         sys.exit(1)
 
     if ENABLE_ACCESS:
-        log("Successfully enabled library access for kodi user")
+        log(f"Successfully enabled library access for user '{USER_NAME}'")
     else:
-        log("Successfully disabled library access for kodi user")
+        log(f"Successfully disabled library access for user '{USER_NAME}'")
 else:
     # No update needed, but log the current state
     if ENABLE_ACCESS:
