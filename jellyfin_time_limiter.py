@@ -30,11 +30,38 @@ if not USER_NAME:
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 http = urllib3.PoolManager(cert_reqs="CERT_NONE")
 
+# Get script directory and log file path
+SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+LOG_FILE = os.path.join(SCRIPT_DIR, "jellyfin_time_limiter.log")
 
-# Log with timestamp for cron
+
+# Log with timestamp to file (only if message changed from last log)
 def log(message):
     timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    print(f"[{timestamp}] {message}")
+    log_line = f"[{timestamp}] {message}\n"
+
+    # Read last line from log file if it exists
+    last_message = None
+    if os.path.exists(LOG_FILE):
+        try:
+            with open(LOG_FILE, "r", encoding="utf-8") as f:
+                lines = f.readlines()
+                if lines:
+                    last_line = lines[-1].strip()
+                    # Extract message part (everything after timestamp)
+                    if "] " in last_line:
+                        last_message = last_line.split("] ", 1)[1]
+        except (IOError, IndexError):
+            pass
+
+    # Only write if message is different from last log
+    if last_message != message:
+        try:
+            with open(LOG_FILE, "a", encoding="utf-8") as f:
+                f.write(log_line)
+        except IOError:
+            # Fallback to stderr if file write fails
+            print(log_line, file=sys.stderr, end="")
 
 
 # Make HTTP request to Jellyfin API
@@ -83,8 +110,6 @@ if not target_user_id:
     log(f"Error: User '{USER_NAME}' not found")
     sys.exit(1)
 
-log(f"User '{USER_NAME}' ID: {target_user_id}")
-
 # Check user activity from user_usage_stats plugin using custom query
 # Query for today's playback activity only (resets at midnight)
 stamp = int(datetime.now().timestamp() * 1000)
@@ -92,7 +117,6 @@ query_endpoint = f"/user_usage_stats/submit_custom_query?stamp={stamp}"
 
 # Get today's date in YYYY-MM-DD format for explicit date comparison
 today_date = datetime.now().strftime("%Y-%m-%d")
-log(f"Querying playback activity for date: {today_date}")
 
 # SQL query to get today's playback activity for target user
 # Using explicit date string to avoid timezone issues with DATE('now')
@@ -119,6 +143,7 @@ if response.status != 200:
     log(f"Response: {response.data.decode('utf-8')}")
     log("Proceeding with manual ENABLE_ACCESS setting...")
     ENABLE_ACCESS = False  # Default to disabled if we can't check
+    total_watch_time_minutes = None
 else:
     # Parse query results
     response_data = json.loads(response.data.decode("utf-8"))
@@ -129,17 +154,14 @@ else:
 
     # Handle empty results (no activity today)
     if not results:
-        log("No playback activity found for today")
         total_watch_time_seconds = 0
         total_watch_time_minutes = 0
         ENABLE_ACCESS = True  # No watch time means access should be enabled
-        log(
-            f"Watch time ({total_watch_time_minutes:.1f} min) is within limit ({JELLYFIN_MAX_WATCH_TIME_MINUTES} min). Access enabled."
-        )
     elif not columns:
         log("Error: No columns found in response")
         log(f"Response structure: {list(response_data.keys())}")
         ENABLE_ACCESS = False  # Default to disabled if we can't parse
+        total_watch_time_minutes = None
     else:
         # Find the index of PlayDuration column
         try:
@@ -149,6 +171,7 @@ else:
             log(f"Available columns: {columns}")
             log(f"Response data: {response_data}")
             ENABLE_ACCESS = False
+            total_watch_time_minutes = None
         else:
             # Sum up total watch time for today
             total_watch_time_seconds = 0
@@ -162,21 +185,9 @@ else:
                         continue
 
             total_watch_time_minutes = total_watch_time_seconds / 60
-            log(
-                f"User '{USER_NAME}' total watch time (today): {total_watch_time_minutes:.1f} minutes ({total_watch_time_seconds} seconds)"
-            )
 
             # Disable access if watch time exceeds limit
             ENABLE_ACCESS = total_watch_time_minutes < JELLYFIN_MAX_WATCH_TIME_MINUTES
-
-            if not ENABLE_ACCESS:
-                log(
-                    f"Watch time ({total_watch_time_minutes:.1f} min) exceeds limit ({JELLYFIN_MAX_WATCH_TIME_MINUTES} min). Disabling access."
-                )
-            else:
-                log(
-                    f"Watch time ({total_watch_time_minutes:.1f} min) is within limit ({JELLYFIN_MAX_WATCH_TIME_MINUTES} min). Access enabled."
-                )
 
 # Get current user policy to check if update is needed
 user_endpoint = f"/Users/{target_user_id}"
@@ -201,16 +212,10 @@ if ENABLE_ACCESS:
         current_enabled_folders == [] and not current_enable_all
     ):
         needs_update = True
-        log("Library access is currently disabled, enabling...")
-    else:
-        log("Library access is already enabled, no update needed.")
 else:
     # Want to disable: check if currently enabled
     if current_enable_all or (current_enabled_folders != []):
         needs_update = True
-        log("Library access is currently enabled, disabling...")
-    else:
-        log("Library access is already disabled, no update needed.")
 
 # Only update if needed
 if needs_update:
@@ -233,13 +238,12 @@ if needs_update:
         log(f"Response: {response.data.decode('utf-8')}")
         sys.exit(1)
 
-    if ENABLE_ACCESS:
-        log(f"Successfully enabled library access for user '{USER_NAME}'")
-    else:
-        log(f"Successfully disabled library access for user '{USER_NAME}'")
-else:
-    # No update needed, but log the current state
-    if ENABLE_ACCESS:
-        log("Library access remains enabled")
-    else:
-        log("Library access remains disabled")
+# Single line log with all information
+watch_time_str = (
+    f"{total_watch_time_minutes:.1f}" if total_watch_time_minutes is not None else "?"
+)
+action = "enabled" if ENABLE_ACCESS else "disabled"
+change_status = "changed" if needs_update else "unchanged"
+log(
+    f"User '{USER_NAME}': {watch_time_str} min / {JELLYFIN_MAX_WATCH_TIME_MINUTES} min - Access {action} ({change_status})"
+)
