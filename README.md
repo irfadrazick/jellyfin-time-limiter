@@ -26,7 +26,7 @@ Automatically disable library access for Jellyfin users when their daily watch t
 The script requires Python 3 and the `urllib3` library:
 
 ```bash
-pip install urllib3
+pip3 install urllib3 --break-system-packages
 ```
 
 ## Configuration
