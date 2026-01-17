@@ -29,6 +29,8 @@ The script requires Python 3 and the `urllib3` library:
 pip3 install urllib3 --break-system-packages
 ```
 
+Note: Use `--break-system-packages` with caution.
+
 ## Configuration
 
 The script is configured via environment variables. All variables prefixed with `JELLYFIN_` are required unless otherwise noted.
