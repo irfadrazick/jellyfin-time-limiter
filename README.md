@@ -89,17 +89,12 @@ For automated monitoring, set up a cron job to run the script every 5 minutes:
    crontab -e
    ```
 
-2. Add the following line (adjust paths as needed):
-   ```bash
-   */5 * * * * /usr/bin/python3 /path/to/jellyfin_time_limiter.py >> /var/log/jellyfin-time-limiter.log 2>&1
-   ```
-
-3. Or with environment variables inline:
+2. **Option A: With environment variables inline** (adjust paths and values as needed):
    ```bash
    */5 * * * * JELLYFIN_BASE_URL="http://192.168.1.100:8096" JELLYFIN_TOKEN="your-token" JELLYFIN_USER_NAME="kodi" JELLYFIN_MAX_WATCH_TIME_MINUTES=90 /usr/bin/python3 /path/to/jellyfin_time_limiter.py >> /var/log/jellyfin-time-limiter.log 2>&1
    ```
 
-4. Or create a wrapper script with environment variables:
+3. **Option B: Using a wrapper script** (recommended for cleaner configuration):
 
    Create `/path/to/jellyfin-time-limiter-wrapper.sh`:
    ```bash
