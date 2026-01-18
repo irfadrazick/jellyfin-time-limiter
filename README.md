@@ -7,7 +7,7 @@ Automatically disable library access for Jellyfin users when their daily watch t
 - Monitors daily watch time for specified users
 - Automatically disables library access when time limit is exceeded
 - Automatically re-enables access when watch time is within limits
-- Resets daily at midnight (local time)
+- Resets daily at midnight based on the local time of the system running this script
 - Only updates policy when changes are needed (avoids unnecessary API calls)
 - Configurable via environment variables
 
