@@ -1,2 +1,237 @@
-# jellyfin-time-limiter
-Disable access to Library when time limit exceeded
+# Jellyfin Time Limiter
+
+Automatically disable library access for Jellyfin users when their daily watch time exceeds a configured limit. The script monitors playback activity and enforces time limits by disabling library access when the threshold is exceeded.
+
+## Features
+
+- Monitors daily watch time for specified users
+- Automatically disables library access when time limit is exceeded
+- Automatically re-enables access when watch time is within limits
+- Resets daily at midnight based on the local time of the system running this script
+- Only updates policy when changes are needed (avoids unnecessary API calls)
+- Configurable via environment variables
+
+## Prerequisites
+
+### Required Jellyfin Plugin
+
+**Playback Reporting Plugin** must be installed and enabled in your Jellyfin server. This plugin provides the playback activity data that the script uses to calculate watch time.
+
+1. Go to Dashboard → Plugins
+2. Install "Playback Reporting" plugin if not already installed
+3. Ensure the plugin is enabled
+
+### Python Dependencies
+
+The script requires Python 3 and the `urllib3` library:
+
+```bash
+pip3 install urllib3 --break-system-packages
+```
+
+Note: Use `--break-system-packages` with caution.
+
+## Configuration
+
+The script is configured via environment variables. All variables prefixed with `JELLYFIN_` are required unless otherwise noted.
+
+### Required Environment Variables
+
+- `JELLYFIN_TOKEN` - API token for authentication
+  - Generate from: Dashboard → API Keys → New API Key
+- `JELLYFIN_USER_NAME` - Username to monitor (e.g., `kodi`, `jellyfin`)
+
+### Optional Environment Variables
+
+- `JELLYFIN_BASE_URL` - Base URL of your Jellyfin server (default: `http://localhost:8096`)
+  - Only required if your Jellyfin server is not running on localhost:8096
+- `JELLYFIN_MAX_WATCH_TIME_MINUTES` - Maximum watch time in minutes before disabling access (default: `90`)
+
+## Getting Your API Token
+
+1. Log into Jellyfin web interface as an administrator
+2. Go to Dashboard → API Keys
+3. Click "New API Key"
+4. Give it a name (e.g., "Time Limiter")
+5. Copy the generated token
+6. Set it as the `JELLYFIN_TOKEN` environment variable
+
+## Installation
+
+1. Clone or download this repository
+2. Install Python dependencies:
+   ```bash
+   pip3 install urllib3 --break-system-packages
+   ```
+   Note: Use `--break-system-packages` with caution.
+3. Make the script executable:
+   ```bash
+   chmod +x jellyfin_time_limiter.py
+   ```
+
+## Usage
+
+### Manual Execution
+
+Set the required environment variables and run the script:
+
+```bash
+export JELLYFIN_TOKEN="your-api-token-here"
+export JELLYFIN_USER_NAME="kodi"
+export JELLYFIN_BASE_URL="http://192.168.1.100:8096"  # Optional, defaults to http://localhost:8096
+export JELLYFIN_MAX_WATCH_TIME_MINUTES=90  # Optional, defaults to 90
+
+python3 jellyfin_time_limiter.py
+```
+
+### Automated Execution with Cron
+
+For automated monitoring, set up a cron job to run the script every 5 minutes:
+
+1. Edit your crontab:
+   ```bash
+   crontab -e
+   ```
+
+2. **Option A: With environment variables inline** (adjust paths and values as needed):
+   ```bash
+   */5 * * * * JELLYFIN_TOKEN="your-token" JELLYFIN_USER_NAME="kodi" JELLYFIN_BASE_URL="http://192.168.1.100:8096" JELLYFIN_MAX_WATCH_TIME_MINUTES=90 /usr/bin/python3 /opt/jellyfin-time-limiter/jellyfin_time_limiter.py
+   ```
+
+   Note: `JELLYFIN_BASE_URL` is optional if using localhost:8096
+
+   Note: The script writes logs to `jellyfin_time_limiter.log` in the script directory. No redirection needed.
+
+3. **Option B: Using a wrapper script** (recommended for cleaner configuration):
+
+   Create `/opt/jellyfin-time-limiter/jellyfin-time-limiter-wrapper.sh`:
+   ```bash
+   #!/bin/bash
+   export JELLYFIN_TOKEN="your-api-token-here"
+   export JELLYFIN_USER_NAME="kodi"
+   export JELLYFIN_BASE_URL="http://192.168.1.100:8096"  # Optional, defaults to http://localhost:8096
+   export JELLYFIN_MAX_WATCH_TIME_MINUTES=90
+
+   /usr/bin/python3 /opt/jellyfin-time-limiter/jellyfin_time_limiter.py
+   ```
+
+   Make it executable:
+   ```bash
+   chmod +x /opt/jellyfin-time-limiter/jellyfin-time-limiter-wrapper.sh
+   ```
+
+   Then in crontab:
+   ```bash
+   */5 * * * * /opt/jellyfin-time-limiter/jellyfin-time-limiter-wrapper.sh
+   ```
+
+   Note: The script writes logs to `jellyfin_time_limiter.log` in the script directory. No redirection needed.
+
+### Systemd Service (Alternative)
+
+You can also run this as a systemd service with a timer. Create `/etc/systemd/system/jellyfin-time-limiter.service`:
+
+```ini
+[Unit]
+Description=Jellyfin Time Limiter
+After=network.target
+
+[Service]
+Type=oneshot
+Environment="JELLYFIN_TOKEN=your-api-token-here"
+Environment="JELLYFIN_USER_NAME=kodi"
+Environment="JELLYFIN_BASE_URL=http://192.168.1.100:8096"
+Environment="JELLYFIN_MAX_WATCH_TIME_MINUTES=90"
+ExecStart=/usr/bin/python3 /opt/jellyfin-time-limiter/jellyfin_time_limiter.py
+StandardOutput=journal
+StandardError=journal
+```
+
+And `/etc/systemd/system/jellyfin-time-limiter.timer`:
+
+```ini
+[Unit]
+Description=Run Jellyfin Time Limiter every 5 minutes
+
+[Timer]
+OnBootSec=5min
+OnUnitActiveSec=5min
+
+[Install]
+WantedBy=timers.target
+```
+
+Enable and start:
+```bash
+sudo systemctl enable jellyfin-time-limiter.timer
+sudo systemctl start jellyfin-time-limiter.timer
+```
+
+## How It Works
+
+1. **Fetches User Information**: Retrieves the user ID for the specified username
+2. **Queries Playback Activity**: Uses the Playback Reporting plugin's custom query API to get today's playback activity
+3. **Calculates Watch Time**: Sums up all `PlayDuration` values from today's records
+4. **Compares Against Limit**: Checks if total watch time exceeds the configured limit
+5. **Updates Policy**:
+   - If watch time exceeds limit: Disables library access (`EnableAllFolders = False`, `EnabledFolders = []`)
+   - If watch time is within limit: Enables library access (`EnableAllFolders = True`)
+   - Only updates if the current policy state differs from desired state
+
+## Error Handling Behavior
+
+The script uses a **fail-permissive** approach for errors to prevent unnecessary access restrictions:
+
+- **API Unavailable**: If the activity API call fails (e.g., server down, network error), access is **enabled** by default. The script will retry on the next run (every 5 minutes), so temporary errors won't lock users out unnecessarily.
+
+- **Empty Results (No Activity)**: When there's no playback activity recorded for today, access is **enabled** (0 minutes is always within any limit). This is expected behavior for users who haven't watched anything.
+
+- **Response Parsing Errors**: If the API response format is unexpected (e.g., missing columns, malformed data), access is **disabled** by default to err on the side of caution, and errors are logged for investigation.
+
+This approach ensures that:
+- Temporary API failures don't block legitimate access
+- Users aren't locked out due to plugin/API issues
+- Actual watch time limits are still enforced when data is available
+- Parsing errors are handled conservatively to prevent unintended access
+
+## Logging
+
+The script logs actions to `jellyfin_time_limiter.log` in the script directory. Logs are deduplicated - only changes are logged to avoid log pollution. Example output:
+
+```
+[2026-01-18 00:40:31] User 'kodi': 128.1 min / 90 min - Access disabled (changed)
+[2026-01-18 00:53:42] User 'kodi': 1.5 min / 90 min - Access enabled (changed)
+```
+
+The log format includes: username, watch time, limit, access status, and whether a change was made.
+
+## Troubleshooting
+
+### "PlayDuration column not found in response"
+- Ensure the Playback Reporting plugin is installed and enabled
+- Check that the plugin has recorded some playback activity
+
+### "User not found"
+- Verify the `JELLYFIN_USER_NAME` matches exactly (case-sensitive)
+- Check that the user exists in your Jellyfin server
+
+### "Error fetching users" or "Error fetching activity data"
+- Verify `JELLYFIN_BASE_URL` is correct and accessible
+- Check that `JELLYFIN_TOKEN` is valid and has appropriate permissions
+- Ensure the Jellyfin server is running and accessible
+
+### No activity found for today
+- This is normal if the user hasn't watched anything today
+- The script will enable access (0 minutes < limit)
+- Watch time resets at midnight local time
+
+## Security Notes
+
+- Store API tokens securely (consider using a secrets manager)
+- Use HTTPS if your Jellyfin server supports it (update `JELLYFIN_BASE_URL`)
+- The script uses `verify=False` for SSL certificates - consider using proper certificates in production
+- Limit API token permissions if possible
+
+## License
+
+This script is provided as-is for personal use.
