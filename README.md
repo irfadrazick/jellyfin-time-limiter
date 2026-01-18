@@ -61,8 +61,9 @@ The script is configured via environment variables. All variables prefixed with 
 1. Clone or download this repository
 2. Install Python dependencies:
    ```bash
-   pip install urllib3
+   pip3 install urllib3 --break-system-packages
    ```
+   Note: Use `--break-system-packages` with caution.
 3. Make the script executable:
    ```bash
    chmod +x jellyfin_time_limiter.py
@@ -179,16 +180,14 @@ sudo systemctl start jellyfin-time-limiter.timer
 
 ## Logging
 
-The script logs all actions with timestamps. Example output:
+The script logs actions to `jellyfin_time_limiter.log` in the script directory. Logs are deduplicated - only changes are logged to avoid log pollution. Example output:
 
 ```
-[2026-01-18 00:40:31] User 'kodi' ID: 25223fdf00a9490fa539c319cf324b02
-[2026-01-18 00:40:31] Querying playback activity for date: 2026-01-18
-[2026-01-18 00:40:31] User 'kodi' total watch time (today): 128.1 minutes (7687.0 seconds)
-[2026-01-18 00:40:31] Watch time (128.1 min) exceeds limit (90 min). Disabling access.
-[2026-01-18 00:40:31] Library access is currently enabled, disabling...
-[2026-01-18 00:40:31] Successfully disabled library access for user 'kodi'
+[2026-01-18 00:40:31] User 'kodi': 128.1 min / 90 min - Access disabled (changed)
+[2026-01-18 00:53:42] User 'kodi': 1.5 min / 90 min - Access enabled (changed)
 ```
+
+The log format includes: username, watch time, limit, access status, and whether a change was made.
 
 ## Troubleshooting
 
