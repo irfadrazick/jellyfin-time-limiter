@@ -252,7 +252,7 @@ if ENABLE_ACCESS:
         needs_update = True
 else:
     # Want to disable: check if currently enabled
-    if current_enable_all or (current_enabled_folders != []):
+    if current_enable_all or current_enabled_folders:
         needs_update = True
 
 # Only update if needed
