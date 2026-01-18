@@ -7,7 +7,7 @@ from datetime import datetime
 import os
 
 JELLYFIN_MAX_WATCH_TIME_MINUTES = int(
-    os.getenv("JELLYFIN_JELLYFIN_MAX_WATCH_TIME_MINUTES", "90")
+    os.getenv("JELLYFIN_MAX_WATCH_TIME_MINUTES", "90")
 )
 USER_NAME = os.getenv("JELLYFIN_USER_NAME")
 JELLYFIN_BASE_URL = os.getenv("JELLYFIN_BASE_URL", "http://localhost:8096")
@@ -205,9 +205,7 @@ current_enabled_folders = current_policy.get("EnabledFolders", [])
 needs_update = False
 if ENABLE_ACCESS:
     # Want to enable: check if currently disabled
-    if not current_enable_all or (
-        current_enabled_folders == [] and not current_enable_all
-    ):
+    if not current_enable_all:
         needs_update = True
 else:
     # Want to disable: check if currently enabled
