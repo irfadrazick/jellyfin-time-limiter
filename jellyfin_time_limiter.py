@@ -31,14 +31,16 @@ http = urllib3.PoolManager(cert_reqs="CERT_NONE")
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 LOG_FILE = os.path.join(SCRIPT_DIR, "jellyfin_time_limiter.log")
 
+# Cache last log message to avoid repeated file reads
+_last_log_message = None
 
-# Log with timestamp to file (only if message changed from last log)
-def log(message):
-    timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    log_line = f"[{timestamp}] {message}\n"
 
-    # Read last line from log file if it exists
-    last_message = None
+# Read last log message from file (cached after first read)
+def _get_last_log_message():
+    global _last_log_message
+    if _last_log_message is not None:
+        return _last_log_message
+
     if os.path.exists(LOG_FILE):
         try:
             with open(LOG_FILE, "r", encoding="utf-8") as f:
@@ -47,15 +49,29 @@ def log(message):
                     last_line = lines[-1].strip()
                     # Extract message part (everything after timestamp)
                     if "] " in last_line:
-                        last_message = last_line.split("] ", 1)[1]
+                        _last_log_message = last_line.split("] ", 1)[1]
         except (IOError, IndexError):
             pass
+
+    return _last_log_message
+
+
+# Log with timestamp to file (only if message changed from last log)
+def log(message):
+    global _last_log_message
+    timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    log_line = f"[{timestamp}] {message}\n"
+
+    # Get last log message (cached)
+    last_message = _get_last_log_message()
 
     # Only write if message is different from last log
     if last_message != message:
         try:
             with open(LOG_FILE, "a", encoding="utf-8") as f:
                 f.write(log_line)
+            # Update cache after successful write
+            _last_log_message = message
         except IOError:
             # Fallback to stderr if file write fails
             print(log_line, file=sys.stderr, end="")
