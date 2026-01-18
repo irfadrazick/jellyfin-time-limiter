@@ -178,6 +178,22 @@ sudo systemctl start jellyfin-time-limiter.timer
    - If watch time is within limit: Enables library access (`EnableAllFolders = True`)
    - Only updates if the current policy state differs from desired state
 
+## Error Handling Behavior
+
+The script uses a **fail-permissive** approach for errors to prevent unnecessary access restrictions:
+
+- **API Unavailable**: If the activity API call fails (e.g., server down, network error), access is **enabled** by default. The script will retry on the next run (every 5 minutes), so temporary errors won't lock users out unnecessarily.
+
+- **Empty Results (No Activity)**: When there's no playback activity recorded for today, access is **enabled** (0 minutes is always within any limit). This is expected behavior for users who haven't watched anything.
+
+- **Response Parsing Errors**: If the API response format is unexpected (e.g., missing columns, malformed data), access is **disabled** by default to err on the side of caution, and errors are logged for investigation.
+
+This approach ensures that:
+- Temporary API failures don't block legitimate access
+- Users aren't locked out due to plugin/API issues
+- Actual watch time limits are still enforced when data is available
+- Parsing errors are handled conservatively to prevent unintended access
+
 ## Logging
 
 The script logs actions to `jellyfin_time_limiter.log` in the script directory. Logs are deduplicated - only changes are logged to avoid log pollution. Example output:

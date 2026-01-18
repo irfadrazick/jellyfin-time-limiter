@@ -50,7 +50,10 @@ def _get_last_log_message():
                     # Extract message part (everything after timestamp)
                     if "] " in last_line:
                         _last_log_message = last_line.split("] ", 1)[1]
-        except (IOError, IndexError):
+        except (IOError, IndexError) as e:
+            # Failure to read the log file is non-fatal; fall back to no cached message.
+            # This allows the script to continue even if the log file is locked or corrupted.
+            # The first log entry will be written without deduplication check.
             pass
 
     return _last_log_message
@@ -103,6 +106,21 @@ def make_request(method, endpoint, headers=None, body=None):
     return http.request(method, url, headers=default_headers, body=encoded_body)
 
 
+# Parse JSON response with error handling
+def parse_json_response(response, context="response", fail_permissive=False):
+    """
+    Parse JSON from HTTP response with error handling.
+    """
+    try:
+        return json.loads(response.data.decode("utf-8"))
+    except json.JSONDecodeError as e:
+        log(f"Error: Failed to parse {context} JSON response: {e}")
+        log(f"Raw response data: {response.data.decode('utf-8', errors='replace')}")
+        if fail_permissive:
+            return None
+        sys.exit(1)
+
+
 # Get users
 response = make_request("GET", "/Users")
 
@@ -112,7 +130,7 @@ if response.status != 200:
 
 target_user_id = None
 
-users = json.loads(response.data.decode("utf-8"))
+users = parse_json_response(response, context="users")
 
 for user in users:
     if user["Name"] == USER_NAME:
@@ -158,49 +176,58 @@ if response.status != 200:
     ENABLE_ACCESS = True  # Fail-permissive: enable access when API is unavailable
     total_watch_time_minutes = None
 else:
-    # Parse query results
-    response_data = json.loads(response.data.decode("utf-8"))
-
-    # Response format: {'colums': [...], 'results': [[...], [...]], 'message': ''}
-    columns = response_data.get("colums", [])  # Note: typo in API response
-    results = response_data.get("results", [])
-
-    # Handle empty results (no activity today)
-    if not results:
-        total_watch_time_seconds = 0
-        total_watch_time_minutes = 0
-        ENABLE_ACCESS = True  # No watch time means access should be enabled
-    elif not columns:
-        log("Error: No columns found in response")
-        log(f"Response structure: {list(response_data.keys())}")
-        ENABLE_ACCESS = False  # Default to disabled if we can't parse
+    # Parse query results (fail-permissive: enable access on JSON parse error)
+    response_data = parse_json_response(
+        response, context="activity", fail_permissive=True
+    )
+    if response_data is None:
+        ENABLE_ACCESS = True  # Fail-permissive: enable access on JSON parse error
         total_watch_time_minutes = None
     else:
-        # Find the index of PlayDuration column
-        try:
-            play_duration_index = columns.index("PlayDuration")
-        except ValueError:
-            log("Error: PlayDuration column not found in response")
-            log(f"Available columns: {columns}")
-            log(f"Response data: {response_data}")
-            ENABLE_ACCESS = False
+        # Response format: {'colums': [...], 'results': [[...], [...]], 'message': ''}
+        columns = response_data.get("colums", [])  # Note: typo in API response
+        results = response_data.get("results", [])
+
+        # Handle empty results (no activity today)
+        if not results:
+            total_watch_time_seconds = 0
+            total_watch_time_minutes = 0
+            ENABLE_ACCESS = True  # No watch time means access should be enabled
+        elif not columns:
+            log("Error: No columns found in response")
+            log(f"Response structure: {list(response_data.keys())}")
+            ENABLE_ACCESS = False  # Default to disabled if we can't parse
             total_watch_time_minutes = None
         else:
-            # Sum up total watch time for today
-            total_watch_time_seconds = 0
-            for row in results:
-                if len(row) > play_duration_index:
-                    duration_str = row[play_duration_index]
-                    try:
-                        total_watch_time_seconds += float(duration_str)
-                    except (ValueError, TypeError):
-                        log(f"Warning: Could not parse duration value: {duration_str}")
-                        continue
+            # Find the index of PlayDuration column
+            try:
+                play_duration_index = columns.index("PlayDuration")
+            except ValueError:
+                log("Error: PlayDuration column not found in response")
+                log(f"Available columns: {columns}")
+                log(f"Response data: {response_data}")
+                ENABLE_ACCESS = False
+                total_watch_time_minutes = None
+            else:
+                # Sum up total watch time for today
+                total_watch_time_seconds = 0
+                for row in results:
+                    if len(row) > play_duration_index:
+                        duration_str = row[play_duration_index]
+                        try:
+                            total_watch_time_seconds += float(duration_str)
+                        except (ValueError, TypeError):
+                            log(
+                                f"Warning: Could not parse duration value: {duration_str}"
+                            )
+                            continue
 
-            total_watch_time_minutes = total_watch_time_seconds / 60
+                total_watch_time_minutes = total_watch_time_seconds / 60
 
-            # Disable access if watch time exceeds limit
-            ENABLE_ACCESS = total_watch_time_minutes < JELLYFIN_MAX_WATCH_TIME_MINUTES
+                # Disable access if watch time exceeds limit
+                ENABLE_ACCESS = (
+                    total_watch_time_minutes < JELLYFIN_MAX_WATCH_TIME_MINUTES
+                )
 
 # Get current user policy to check if update is needed
 user_endpoint = f"/Users/{target_user_id}"
@@ -210,7 +237,7 @@ if response.status != 200:
     log(f"Error fetching user: {response.status}")
     sys.exit(1)
 
-user_data = json.loads(response.data.decode("utf-8"))
+user_data = parse_json_response(response, context="user")
 current_policy = user_data.get("Policy", {})
 
 # Check if policy already matches desired state
