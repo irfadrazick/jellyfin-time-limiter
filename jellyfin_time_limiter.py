@@ -154,8 +154,8 @@ response = make_request(
 if response.status != 200:
     log(f"Warning: Could not fetch activity data: {response.status}")
     log(f"Response: {response.data.decode('utf-8')}")
-    log("Proceeding with manual ENABLE_ACCESS setting...")
-    ENABLE_ACCESS = False  # Default to disabled if we can't check
+    log("API error - defaulting to enabled access (fail-permissive)")
+    ENABLE_ACCESS = True  # Fail-permissive: enable access when API is unavailable
     total_watch_time_minutes = None
 else:
     # Parse query results
