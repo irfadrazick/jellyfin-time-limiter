@@ -2,6 +2,8 @@
 
 Automatically disable library access for Jellyfin users when their daily watch time exceeds a configured limit. The script monitors playback activity and enforces time limits by disabling library access when the threshold is exceeded.
 
+This command-line version was built based on the idea from https://github.com/Joker-KP/jelly-watch-wise, which features a UI.
+
 ## Features
 
 - Monitors daily watch time for specified users
