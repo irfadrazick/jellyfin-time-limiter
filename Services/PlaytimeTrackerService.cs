@@ -161,6 +161,17 @@ public class PlaytimeTrackerService
     }
 
     /// <summary>
+    /// Returns true if this session is currently being tracked.
+    /// </summary>
+    public bool IsTracking(string sessionId)
+    {
+        lock (_lock)
+        {
+            return _activeSessions.ContainsKey(sessionId);
+        }
+    }
+
+    /// <summary>
     /// Records the start of a playback session.
     /// </summary>
     public void StartSession(string sessionId, Guid userId)

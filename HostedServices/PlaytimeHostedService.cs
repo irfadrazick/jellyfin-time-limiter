@@ -178,29 +178,55 @@ public class PlaytimeHostedService : IHostedService, IDisposable
         using var timer = new PeriodicTimer(TimeSpan.FromSeconds(60));
         while (await timer.WaitForNextTickAsync(ct).ConfigureAwait(false))
         {
-            PruneOrphanedSessions();
+            ReconcileSessions();
             _tracker.FlushActiveSessions();
             await CheckWarningsAsync(ct).ConfigureAwait(false);
         }
     }
 
-    // Removes sessions that are tracked but no longer playing in Jellyfin (e.g. client crash/reboot).
-    private void PruneOrphanedSessions()
+    // Reconciles tracked sessions against Jellyfin's live session list:
+    // - Prunes sessions that no longer exist in Jellyfin (client crash/disconnect).
+    // - Starts tracking sessions that are playing but not yet tracked (missed PlaybackStart).
+    private void ReconcileSessions()
     {
-        var playingSessions = new HashSet<string>(
-            _sessionManager.Sessions
-                .Where(s => s.NowPlayingItem != null)
-                .Select(s => s.Id));
+        var knownSessionIds = new HashSet<string>(_sessionManager.Sessions.Select(s => s.Id));
 
+        // Prune sessions gone from Jellyfin entirely.
         foreach (var sessionId in _tracker.GetTrackedSessionIds())
         {
-            if (!playingSessions.Contains(sessionId))
+            if (!knownSessionIds.Contains(sessionId))
             {
                 _logger.LogInformation(
-                    "TimeLimiter: pruning orphaned session {SessionId} (no longer playing)",
+                    "TimeLimiter: pruning orphaned session {SessionId} (no longer in Jellyfin)",
                     sessionId);
                 _tracker.UnblockSession(sessionId);
                 _tracker.StopSession(sessionId);
+            }
+        }
+
+        // Start tracking sessions that are playing but not tracked (missed PlaybackStart).
+        foreach (var session in _sessionManager.Sessions)
+        {
+            if (session.NowPlayingItem is null) continue;
+            if (session.UserId.Equals(Guid.Empty)) continue;
+            if (IsAdmin(session.UserId)) continue;
+            if (_tracker.IsTracking(session.Id)) continue;
+            if (_tracker.IsSessionBlocked(session.Id)) continue;
+
+            if (_tracker.IsOverLimit(session.UserId))
+            {
+                _logger.LogInformation(
+                    "TimeLimiter: timer found over-limit untracked session {SessionId}, blocking",
+                    session.Id);
+                _tracker.MarkSessionBlocked(session.Id);
+                _ = StopSessionAsync(session.Id);
+            }
+            else
+            {
+                _logger.LogInformation(
+                    "TimeLimiter: timer found untracked session {SessionId}, starting tracking",
+                    session.Id);
+                _tracker.StartSession(session.Id, session.UserId);
             }
         }
     }
