@@ -33,6 +33,8 @@ See [BUILD.md](BUILD.md) for prerequisites and full build instructions.
 
 Open **Time Limiter** from the Jellyfin sidebar (or Dashboard → Plugins → Time Limiter → Settings).
 
+![Time Limiter config page](docs/config-page.png)
+
 ### Global Daily Limit
 
 Sets the default limit for all non-admin users. Enter a value in minutes (`0` = no limit).
