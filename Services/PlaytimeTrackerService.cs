@@ -10,11 +10,14 @@ namespace Jellyfin.Plugin.TimeLimiter.Services;
 
 /// <summary>
 /// Singleton service that tracks active playback sessions and persists daily totals.
+/// Time is accumulated via PlaybackProgress ticks (like the Playback Reporting plugin)
+/// rather than computing (now - startTime), so ghost sessions never accumulate time.
 /// </summary>
 public class PlaytimeTrackerService
 {
     private const string DataFileName = "playtime.json";
     private const int WarnThresholdSeconds = 5 * 60; // 5 minutes
+    private const int MaxTickGapSeconds = 120; // ignore gaps larger than this (e.g. after long pause or freeze)
 
     private readonly IApplicationPaths _appPaths;
     private readonly ILogger<PlaytimeTrackerService> _logger;
@@ -22,9 +25,11 @@ public class PlaytimeTrackerService
     private readonly object _saveLock = new();
 
     private PlaytimeData _data;
-    private readonly Dictionary<string, (Guid UserId, DateTimeOffset StartTime)> _activeSessions = new();
+    private readonly Dictionary<string, ActiveSession> _activeSessions = new();
     private readonly HashSet<string> _warnedSessions = new();
     private readonly HashSet<string> _blockedSessions = new();
+
+    private record ActiveSession(Guid UserId, DateTimeOffset LastTickTime, long AccumulatedSeconds, bool IsPaused);
 
     /// <summary>
     /// Initializes a new instance of the <see cref="PlaytimeTrackerService"/> class.
@@ -50,33 +55,25 @@ public class PlaytimeTrackerService
     {
         lock (_lock)
         {
-            var key = userId.ToString();
-            if (_data.Records.TryGetValue(key, out var dates) &&
-                dates.TryGetValue(TodayKey, out var seconds))
-            {
-                return seconds;
-            }
-
-            return 0;
+            return GetCompletedSecondsTodayUnsafe(userId);
         }
     }
 
     /// <summary>
-    /// Gets the total seconds today: completed + elapsed from all active sessions for this user.
+    /// Gets the total seconds today: completed + accumulated from all active sessions for this user.
+    /// Active session time is event-driven (only grows when PlaybackProgress fires) so ghost
+    /// sessions that have lost connectivity do not inflate this value.
     /// </summary>
     public long GetTotalSecondsToday(Guid userId)
     {
         lock (_lock)
         {
             var total = GetCompletedSecondsTodayUnsafe(userId);
-            var now = DateTimeOffset.UtcNow;
-            var startOfToday = now.Date; // midnight UTC
             foreach (var (_, session) in _activeSessions)
             {
                 if (session.UserId == userId)
                 {
-                    var effectiveStart = session.StartTime < startOfToday ? startOfToday : session.StartTime;
-                    total += (long)(now - effectiveStart).TotalSeconds;
+                    total += session.AccumulatedSeconds;
                 }
             }
 
@@ -174,18 +171,47 @@ public class PlaytimeTrackerService
     /// <summary>
     /// Records the start of a playback session.
     /// </summary>
-    public void StartSession(string sessionId, Guid userId)
+    public void StartSession(string sessionId, Guid userId, bool isPaused = false)
     {
         lock (_lock)
         {
-            _activeSessions[sessionId] = (userId, DateTimeOffset.UtcNow);
+            _activeSessions[sessionId] = new ActiveSession(userId, DateTimeOffset.UtcNow, 0, isPaused);
             _logger.LogInformation("TimeLimiter: started session {SessionId} for user {UserId}", sessionId, userId);
         }
     }
 
     /// <summary>
-    /// Records the stop of a playback session. Returns elapsed seconds, adds to persisted total.
-    /// Returns 0 if the session was not tracked.
+    /// Advances the accumulated time for a session based on elapsed wall-clock time since the last tick.
+    /// Paused intervals are excluded. Gaps larger than <see cref="MaxTickGapSeconds"/> are ignored
+    /// (e.g. after a server freeze or reconnect).
+    /// </summary>
+    public void TickSession(string sessionId, bool isPaused)
+    {
+        lock (_lock)
+        {
+            if (!_activeSessions.TryGetValue(sessionId, out var session))
+            {
+                return;
+            }
+
+            var now = DateTimeOffset.UtcNow;
+            var delta = (long)(now - session.LastTickTime).TotalSeconds;
+
+            long newAccumulated = session.AccumulatedSeconds;
+
+            // Only count time when both the previous and current state are "playing"
+            if (!isPaused && !session.IsPaused && delta > 0 && delta <= MaxTickGapSeconds)
+            {
+                newAccumulated += delta;
+            }
+
+            _activeSessions[sessionId] = session with { LastTickTime = now, AccumulatedSeconds = newAccumulated, IsPaused = isPaused };
+        }
+    }
+
+    /// <summary>
+    /// Records the stop of a playback session. Adds any remaining accumulated seconds to the
+    /// persisted total. Returns accumulated seconds, or 0 if the session was not tracked.
     /// </summary>
     public long StopSession(string sessionId)
     {
@@ -199,40 +225,35 @@ public class PlaytimeTrackerService
             _activeSessions.Remove(sessionId);
             _warnedSessions.Remove(sessionId);
 
-            var now = DateTimeOffset.UtcNow;
-            var elapsed = (long)(now - session.StartTime).TotalSeconds;
-            if (elapsed < 0)
+            var accumulated = session.AccumulatedSeconds;
+            if (accumulated > 0)
             {
-                elapsed = 0;
+                AddCompletedSecondsUnsafe(session.UserId, accumulated);
             }
 
-            AddElapsedTimeUnsafe(session.UserId, session.StartTime, now);
             _logger.LogInformation(
-                "TimeLimiter: stopped session {SessionId} for user {UserId}, elapsed {Elapsed}s",
-                sessionId, session.UserId, elapsed);
+                "TimeLimiter: stopped session {SessionId} for user {UserId}, accumulated {Accumulated}s",
+                sessionId, session.UserId, accumulated);
 
-            return elapsed;
+            return accumulated;
         }
     }
 
     /// <summary>
-    /// Persists elapsed time for all active sessions and resets each session's start time to now.
-    /// This prevents losing time on server restart or crash (called on shutdown and every 60s).
+    /// Persists accumulated time for all active sessions and resets each session's accumulator to zero.
+    /// Safe for ghost sessions: if no progress events have arrived, accumulated is 0 and nothing is written.
     /// </summary>
     public void FlushActiveSessions()
     {
         lock (_lock)
         {
-            var now = DateTimeOffset.UtcNow;
             foreach (var sessionId in new List<string>(_activeSessions.Keys))
             {
                 var session = _activeSessions[sessionId];
-                var elapsed = (long)(now - session.StartTime).TotalSeconds;
-                if (elapsed > 0)
+                if (session.AccumulatedSeconds > 0)
                 {
-                    AddElapsedTimeUnsafe(session.UserId, session.StartTime, now);
-                    // Reset start time to now so elapsed doesn't get double-counted
-                    _activeSessions[sessionId] = (session.UserId, now);
+                    AddCompletedSecondsUnsafe(session.UserId, session.AccumulatedSeconds);
+                    _activeSessions[sessionId] = session with { AccumulatedSeconds = 0 };
                 }
             }
         }
@@ -306,6 +327,16 @@ public class PlaytimeTrackerService
             if (_data.Records.TryGetValue(key, out var dates))
             {
                 dates.Remove(TodayKey);
+            }
+
+            // Also reset any in-progress accumulated time for this user's active sessions.
+            foreach (var sessionId in new List<string>(_activeSessions.Keys))
+            {
+                var session = _activeSessions[sessionId];
+                if (session.UserId == userId)
+                {
+                    _activeSessions[sessionId] = session with { AccumulatedSeconds = 0 };
+                }
             }
 
             _logger.LogInformation("TimeLimiter: reset today's record for user {UserId}", userId);
@@ -385,11 +416,10 @@ public class PlaytimeTrackerService
         return 0;
     }
 
-    // Must be called under _lock. Splits elapsed time at UTC day boundaries so sessions
-    // spanning midnight are credited to the correct day.
-    private void AddElapsedTimeUnsafe(Guid userId, DateTimeOffset from, DateTimeOffset to)
+    // Must be called under _lock. Adds seconds to today's completed record.
+    private void AddCompletedSecondsUnsafe(Guid userId, long seconds)
     {
-        if (to <= from)
+        if (seconds <= 0)
         {
             return;
         }
@@ -401,20 +431,8 @@ public class PlaytimeTrackerService
             _data.Records[key] = dates;
         }
 
-        var current = from;
-        while (current < to)
-        {
-            var nextMidnight = new DateTimeOffset(current.UtcDateTime.Date.AddDays(1), TimeSpan.Zero);
-            var segmentEnd = to < nextMidnight ? to : nextMidnight;
-            var seconds = (long)(segmentEnd - current).TotalSeconds;
-            if (seconds > 0)
-            {
-                var dayKey = current.UtcDateTime.ToString("yyyy-MM-dd");
-                dates.TryGetValue(dayKey, out var existing);
-                dates[dayKey] = existing + seconds;
-            }
-
-            current = segmentEnd;
-        }
+        var dayKey = TodayKey;
+        dates.TryGetValue(dayKey, out var existing);
+        dates[dayKey] = existing + seconds;
     }
 }

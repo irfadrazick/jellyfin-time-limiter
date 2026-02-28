@@ -114,35 +114,45 @@ public class PlaytimeHostedService : IHostedService, IDisposable
             return;
         }
 
-        _tracker.StartSession(session.Id, userId);
+        var isPaused = session.PlayState?.IsPaused ?? false;
+        _tracker.StartSession(session.Id, userId, isPaused);
     }
 
     private void OnPlaybackProgress(object? sender, PlaybackProgressEventArgs e)
     {
         var session = e.Session;
-        if (!_tracker.IsSessionBlocked(session.Id))
+
+        if (_tracker.IsSessionBlocked(session.Id))
         {
+            // Throttle repeated stop attempts to avoid spamming the session with commands.
+            lock (_stopThrottleLock)
+            {
+                var now = DateTimeOffset.UtcNow;
+                if (_lastStopAttempt.TryGetValue(session.Id, out var last) &&
+                    (now - last).TotalSeconds < StopThrottleSeconds)
+                {
+                    return;
+                }
+
+                _lastStopAttempt[session.Id] = now;
+            }
+
+            _logger.LogInformation(
+                "TimeLimiter: re-stopping blocked session {SessionId} on progress event",
+                session.Id);
+
+            _ = StopSessionAsync(session.Id);
             return;
         }
 
-        // Throttle repeated stop attempts to avoid spamming the session with commands.
-        lock (_stopThrottleLock)
+        // Advance accumulated time for tracked sessions.
+        // Time only grows when progress events arrive, so ghost sessions that have lost
+        // connectivity naturally stop accumulating (same approach as Playback Reporting plugin).
+        if (_tracker.IsTracking(session.Id))
         {
-            var now = DateTimeOffset.UtcNow;
-            if (_lastStopAttempt.TryGetValue(session.Id, out var last) &&
-                (now - last).TotalSeconds < StopThrottleSeconds)
-            {
-                return;
-            }
-
-            _lastStopAttempt[session.Id] = now;
+            var isPaused = session.PlayState?.IsPaused ?? false;
+            _tracker.TickSession(session.Id, isPaused);
         }
-
-        _logger.LogInformation(
-            "TimeLimiter: re-stopping blocked session {SessionId} on progress event",
-            session.Id);
-
-        _ = StopSessionAsync(session.Id);
     }
 
     private void OnPlaybackStopped(object? sender, PlaybackStopEventArgs e)
@@ -226,7 +236,7 @@ public class PlaytimeHostedService : IHostedService, IDisposable
                 _logger.LogInformation(
                     "TimeLimiter: timer found untracked session {SessionId}, starting tracking",
                     session.Id);
-                _tracker.StartSession(session.Id, session.UserId);
+                _tracker.StartSession(session.Id, session.UserId, session.PlayState?.IsPaused ?? false);
             }
         }
     }
