@@ -1,0 +1,13 @@
+---
+guid: "a8b3c2d1-e4f5-6789-abcd-ef0123456789"
+name: "Time Limiter"
+description: "Limits daily playback time per user with configurable limits and warnings."
+overview: "Tracks each non-admin user's daily playback time. Blocks new playback once the configured limit is reached. Sends a warning notification 5 minutes before the limit."
+owner: "Jellyfin Community"
+category: "General"
+artifacts:
+  - "Jellyfin.Plugin.TimeLimiter.dll"
+targetAbi: "10.11.0.0"
+framework: "net9.0"
+sourceUrl: ""
+changelog: "Initial release."
