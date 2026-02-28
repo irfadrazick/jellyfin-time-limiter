@@ -19,6 +19,7 @@ public class PlaytimeTrackerService
     private readonly IApplicationPaths _appPaths;
     private readonly ILogger<PlaytimeTrackerService> _logger;
     private readonly object _lock = new();
+    private readonly object _saveLock = new();
 
     private PlaytimeData _data;
     private readonly Dictionary<string, (Guid UserId, DateTimeOffset StartTime)> _activeSessions = new();
@@ -69,11 +70,13 @@ public class PlaytimeTrackerService
         {
             var total = GetCompletedSecondsTodayUnsafe(userId);
             var now = DateTimeOffset.UtcNow;
+            var startOfToday = now.Date; // midnight UTC
             foreach (var (_, session) in _activeSessions)
             {
                 if (session.UserId == userId)
                 {
-                    total += (long)(now - session.StartTime).TotalSeconds;
+                    var effectiveStart = session.StartTime < startOfToday ? startOfToday : session.StartTime;
+                    total += (long)(now - effectiveStart).TotalSeconds;
                 }
             }
 
@@ -174,13 +177,14 @@ public class PlaytimeTrackerService
             _activeSessions.Remove(sessionId);
             _warnedSessions.Remove(sessionId);
 
-            var elapsed = (long)(DateTimeOffset.UtcNow - session.StartTime).TotalSeconds;
+            var now = DateTimeOffset.UtcNow;
+            var elapsed = (long)(now - session.StartTime).TotalSeconds;
             if (elapsed < 0)
             {
                 elapsed = 0;
             }
 
-            AddCompletedSecondsUnsafe(session.UserId, elapsed);
+            AddElapsedTimeUnsafe(session.UserId, session.StartTime, now);
             _logger.LogInformation(
                 "TimeLimiter: stopped session {SessionId} for user {UserId}, elapsed {Elapsed}s",
                 sessionId, session.UserId, elapsed);
@@ -204,7 +208,7 @@ public class PlaytimeTrackerService
                 var elapsed = (long)(now - session.StartTime).TotalSeconds;
                 if (elapsed > 0)
                 {
-                    AddCompletedSecondsUnsafe(session.UserId, elapsed);
+                    AddElapsedTimeUnsafe(session.UserId, session.StartTime, now);
                     // Reset start time to now so elapsed doesn't get double-counted
                     _activeSessions[sessionId] = (session.UserId, now);
                 }
@@ -299,18 +303,21 @@ public class PlaytimeTrackerService
             json = JsonSerializer.Serialize(_data, new JsonSerializerOptions { WriteIndented = true });
         }
 
-        try
+        lock (_saveLock)
         {
-            var path = DataFilePath;
-            var dir = Path.GetDirectoryName(path)!;
-            Directory.CreateDirectory(dir);
-            var tmp = path + ".tmp";
-            File.WriteAllText(tmp, json);
-            File.Move(tmp, path, overwrite: true);
-        }
-        catch (Exception ex)
-        {
-            _logger.LogError(ex, "TimeLimiter: failed to save playtime data");
+            try
+            {
+                var path = DataFilePath;
+                var dir = Path.GetDirectoryName(path)!;
+                Directory.CreateDirectory(dir);
+                var tmp = path + ".tmp";
+                File.WriteAllText(tmp, json);
+                File.Move(tmp, path, overwrite: true);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "TimeLimiter: failed to save playtime data");
+            }
         }
     }
 
@@ -330,6 +337,7 @@ public class PlaytimeTrackerService
             var loaded = JsonSerializer.Deserialize<PlaytimeData>(json);
             if (loaded is not null)
             {
+                loaded.Records ??= new Dictionary<string, Dictionary<string, long>>();
                 lock (_lock)
                 {
                     _data = loaded;
@@ -355,9 +363,15 @@ public class PlaytimeTrackerService
         return 0;
     }
 
-    // Must be called under _lock
-    private void AddCompletedSecondsUnsafe(Guid userId, long seconds)
+    // Must be called under _lock. Splits elapsed time at UTC day boundaries so sessions
+    // spanning midnight are credited to the correct day.
+    private void AddElapsedTimeUnsafe(Guid userId, DateTimeOffset from, DateTimeOffset to)
     {
+        if (to <= from)
+        {
+            return;
+        }
+
         var key = userId.ToString();
         if (!_data.Records.TryGetValue(key, out var dates))
         {
@@ -365,8 +379,20 @@ public class PlaytimeTrackerService
             _data.Records[key] = dates;
         }
 
-        var today = TodayKey;
-        dates.TryGetValue(today, out var current);
-        dates[today] = current + seconds;
+        var current = from;
+        while (current < to)
+        {
+            var nextMidnight = new DateTimeOffset(current.UtcDateTime.Date.AddDays(1), TimeSpan.Zero);
+            var segmentEnd = to < nextMidnight ? to : nextMidnight;
+            var seconds = (long)(segmentEnd - current).TotalSeconds;
+            if (seconds > 0)
+            {
+                var dayKey = current.UtcDateTime.ToString("yyyy-MM-dd");
+                dates.TryGetValue(dayKey, out var existing);
+                dates[dayKey] = existing + seconds;
+            }
+
+            current = segmentEnd;
+        }
     }
 }

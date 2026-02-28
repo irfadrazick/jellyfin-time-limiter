@@ -24,6 +24,9 @@ public class PlaytimeHostedService : IHostedService, IDisposable
     private CancellationTokenSource? _timerCts;
     private Task? _timerTask;
     private bool _disposed;
+    private readonly Dictionary<string, DateTimeOffset> _lastStopAttempt = new();
+    private readonly object _stopThrottleLock = new();
+    private const int StopThrottleSeconds = 5;
 
     /// <summary>
     /// Initializes a new instance of the <see cref="PlaytimeHostedService"/> class.
@@ -120,7 +123,19 @@ public class PlaytimeHostedService : IHostedService, IDisposable
             return;
         }
 
-        // Session was blocked but is still reporting progress — stop it again.
+        // Throttle repeated stop attempts to avoid spamming the session with commands.
+        lock (_stopThrottleLock)
+        {
+            var now = DateTimeOffset.UtcNow;
+            if (_lastStopAttempt.TryGetValue(session.Id, out var last) &&
+                (now - last).TotalSeconds < StopThrottleSeconds)
+            {
+                return;
+            }
+
+            _lastStopAttempt[session.Id] = now;
+        }
+
         _logger.LogInformation(
             "TimeLimiter: re-stopping blocked session {SessionId} on progress event",
             session.Id);
@@ -130,6 +145,11 @@ public class PlaytimeHostedService : IHostedService, IDisposable
 
     private void OnPlaybackStopped(object? sender, PlaybackStopEventArgs e)
     {
+        lock (_stopThrottleLock)
+        {
+            _lastStopAttempt.Remove(e.Session.Id);
+        }
+
         _tracker.UnblockSession(e.Session.Id);
         _tracker.StopSession(e.Session.Id);
         _tracker.Save();

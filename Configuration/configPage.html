@@ -148,7 +148,7 @@
                             '<span style="display:inline-flex; align-items:center; gap:6px;">' +
                             '<input type="number" min="-1" class="userLimitInput emby-input" ' +
                             '       data-userid="' + user.Id + '" ' +
-                            '       data-username="' + user.Name + '" ' +
+                            '       data-username="' + escapeHtml(user.Name) + '" ' +
                             '       value="' + limitMin + '" style="width:80px;" />' +
                             '<span>min</span>' +
                             '</span>' +
