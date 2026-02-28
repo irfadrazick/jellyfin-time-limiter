@@ -103,6 +103,10 @@ public class PlaytimeHostedService : IHostedService, IDisposable
             return;
         }
 
+        // Clear any stale block state from a previous session with this ID (e.g. after a
+        // time reset or reconnect). OnPlaybackStart always represents a fresh play attempt.
+        _tracker.UnblockSession(session.Id);
+
         if (_tracker.IsOverLimit(userId))
         {
             _logger.LogInformation(
