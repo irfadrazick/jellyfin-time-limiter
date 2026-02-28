@@ -30,7 +30,7 @@
                     <thead>
                         <tr>
                             <th style="text-align:left; padding:6px 8px;">User</th>
-                            <th style="text-align:left; padding:6px 8px;">Limit (min, -1 = global, 0 = none)</th>
+                            <th style="text-align:left; padding:6px 8px;">Limit (-1 = use global, 0 = no limit)</th>
                             <th style="text-align:left; padding:6px 8px;">Used Today</th>
                             <th style="text-align:left; padding:6px 8px;">Remaining</th>
                             <th style="text-align:left; padding:6px 8px;">Reset</th>
@@ -144,10 +144,13 @@
                     tr.innerHTML =
                         '<td style="padding:6px 8px;">' + escapeHtml(user.Name) + '</td>' +
                         '<td style="padding:6px 8px;">' +
+                            '<span style="display:inline-flex; align-items:center; gap:6px;">' +
                             '<input type="number" min="-1" class="userLimitInput emby-input" ' +
                             '       data-userid="' + user.Id + '" ' +
                             '       data-username="' + escapeHtml(user.Name) + '" ' +
                             '       value="' + limitMin + '" style="width:80px;" />' +
+                            '<span>min</span>' +
+                            '</span>' +
                         '</td>' +
                         '<td style="padding:6px 8px;" data-used-userid="' + user.Id + '">' + formatDuration(usedSec) + '</td>' +
                         '<td style="padding:6px 8px;" data-rem-userid="'  + user.Id + '">' + remText + '</td>' +
