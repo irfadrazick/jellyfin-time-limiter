@@ -1,4 +1,6 @@
 using System;
+using System.Collections.Generic;
+using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
 using Jellyfin.Plugin.TimeLimiter.Services;
@@ -176,8 +178,30 @@ public class PlaytimeHostedService : IHostedService, IDisposable
         using var timer = new PeriodicTimer(TimeSpan.FromSeconds(60));
         while (await timer.WaitForNextTickAsync(ct).ConfigureAwait(false))
         {
+            PruneOrphanedSessions();
             _tracker.FlushActiveSessions();
             await CheckWarningsAsync(ct).ConfigureAwait(false);
+        }
+    }
+
+    // Removes sessions that are tracked but no longer playing in Jellyfin (e.g. client crash/reboot).
+    private void PruneOrphanedSessions()
+    {
+        var playingSessions = new HashSet<string>(
+            _sessionManager.Sessions
+                .Where(s => s.NowPlayingItem != null)
+                .Select(s => s.Id));
+
+        foreach (var sessionId in _tracker.GetTrackedSessionIds())
+        {
+            if (!playingSessions.Contains(sessionId))
+            {
+                _logger.LogInformation(
+                    "TimeLimiter: pruning orphaned session {SessionId} (no longer playing)",
+                    sessionId);
+                _tracker.UnblockSession(sessionId);
+                _tracker.StopSession(sessionId);
+            }
         }
     }
 

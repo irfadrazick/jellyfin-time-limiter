@@ -150,6 +150,17 @@ public class PlaytimeTrackerService
     }
 
     /// <summary>
+    /// Returns the IDs of all currently tracked active sessions.
+    /// </summary>
+    public IReadOnlyCollection<string> GetTrackedSessionIds()
+    {
+        lock (_lock)
+        {
+            return new List<string>(_activeSessions.Keys);
+        }
+    }
+
+    /// <summary>
     /// Records the start of a playback session.
     /// </summary>
     public void StartSession(string sessionId, Guid userId)
