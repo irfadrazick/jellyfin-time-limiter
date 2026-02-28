@@ -1,0 +1,215 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="utf-8" />
+    <title>Time Limiter</title>
+</head>
+<body>
+<div id="TimeLimiterConfigPage" data-role="page" class="page type-interior pluginConfigurationPage" data-require="emby-input,emby-button,emby-select,emby-checkbox">
+    <div data-role="content">
+        <div class="content-primary">
+
+            <form id="TimeLimiterConfigForm">
+                <div class="sectionTitleContainer flex align-items-center">
+                    <h2 class="sectionTitle">Time Limiter</h2>
+                </div>
+
+                <!-- Global default limit -->
+                <div class="inputContainer">
+                    <label class="inputLabel inputLabelUnfocused" for="defaultDailyLimit">
+                        Global Daily Limit (minutes, 0 = no limit)
+                    </label>
+                    <input id="defaultDailyLimit" type="number" min="0" is="emby-input" class="emby-input" />
+                </div>
+
+                <div class="sectionTitleContainer" style="margin-top:1.5em;">
+                    <h3 class="sectionTitle">Per-User Limits</h3>
+                </div>
+
+                <table class="tblConfigTable" style="width:100%; border-collapse:collapse;">
+                    <thead>
+                        <tr>
+                            <th style="text-align:left; padding:6px 8px;">User</th>
+                            <th style="text-align:left; padding:6px 8px;">Limit (min, -1 = global, 0 = none)</th>
+                            <th style="text-align:left; padding:6px 8px;">Used Today</th>
+                            <th style="text-align:left; padding:6px 8px;">Remaining</th>
+                            <th style="text-align:left; padding:6px 8px;">Reset</th>
+                        </tr>
+                    </thead>
+                    <tbody id="userLimitsTableBody">
+                        <!-- Populated by JavaScript -->
+                    </tbody>
+                </table>
+
+                <div style="margin-top:1.5em; display:flex; gap:0.75em;">
+                    <button is="emby-button" type="submit" class="raised button-submit">
+                        <span>Save</span>
+                    </button>
+                    <button is="emby-button" type="button" id="refreshStatusBtn" class="raised button-secondary">
+                        <span>Refresh</span>
+                    </button>
+                </div>
+            </form>
+
+        </div>
+    </div>
+
+    <script type="text/javascript">
+    (function () {
+        'use strict';
+
+        var pluginId = 'a8b3c2d1-e4f5-6789-abcd-ef0123456789';
+
+        function formatDuration(seconds) {
+            if (seconds < 0) return 'Unlimited';
+            var m = Math.floor(seconds / 60);
+            var s = seconds % 60;
+            return m + ' min' + (s > 0 ? ' ' + s + ' sec' : '');
+        }
+
+        function escapeHtml(str) {
+            return String(str)
+                .replace(/&/g, '&amp;')
+                .replace(/</g, '&lt;')
+                .replace(/>/g, '&gt;')
+                .replace(/"/g, '&quot;');
+        }
+
+        // Fetch only the live status and update the Used Today / Remaining cells.
+        function refreshStatus() {
+            ApiClient.fetch({ url: ApiClient.getUrl('TimeLimiter/Status'), type: 'GET' })
+                .then(function(r) { return r.json(); })
+                .then(function(statusList) {
+                    statusList.forEach(function(s) {
+                        var usedCell = document.querySelector('[data-used-userid="' + s.UserId + '"]');
+                        var remCell  = document.querySelector('[data-rem-userid="'  + s.UserId + '"]');
+                        if (usedCell) usedCell.textContent = formatDuration(s.UsedSeconds);
+                        if (remCell)  remCell.textContent  = s.LimitSeconds > 0
+                            ? formatDuration(Math.max(0, s.RemainingSeconds))
+                            : 'Unlimited';
+                    });
+                })
+                .catch(function() { /* silently ignore on refresh */ });
+        }
+
+        function loadPage(page) {
+            var promises = [
+                ApiClient.getPluginConfiguration(pluginId),
+                ApiClient.fetch({ url: ApiClient.getUrl('TimeLimiter/Status'), type: 'GET' })
+                    .then(function(r) { return r.json(); })
+                    .catch(function() { return []; }),
+                ApiClient.getUsers()
+            ];
+
+            Promise.all(promises).then(function (results) {
+                var config     = results[0];
+                var statusList = results[1];
+                var allUsers   = results[2];
+
+                page.querySelector('#defaultDailyLimit').value = config.DefaultDailyLimitMinutes || 120;
+
+                // Build maps
+                var statusMap = {};
+                statusList.forEach(function(s) { statusMap[s.UserId] = s; });
+
+                var limitMap = {};
+                (config.UserLimits || []).forEach(function(e) { limitMap[e.UserId] = e; });
+
+                var tbody = page.querySelector('#userLimitsTableBody');
+                tbody.innerHTML = '';
+
+                var nonAdmins = allUsers.filter(function(u) {
+                    return !u.Policy || !u.Policy.IsAdministrator;
+                });
+
+                nonAdmins.forEach(function(user) {
+                    var existingEntry = limitMap[user.Id] || {};
+                    var limitMin = existingEntry.DailyLimitMinutes !== undefined
+                        ? existingEntry.DailyLimitMinutes : -1;
+
+                    var status   = statusMap[user.Id] || {};
+                    var usedSec  = status.UsedSeconds !== undefined ? status.UsedSeconds : 0;
+                    // Show Unlimited only when the effective limit is truly 0 (no limit).
+                    // If status API failed (status empty), show '–' rather than 'Unlimited'.
+                    var remText;
+                    if (!statusMap[user.Id]) {
+                        remText = '–';
+                    } else if (status.LimitSeconds > 0) {
+                        remText = formatDuration(Math.max(0, status.RemainingSeconds));
+                    } else {
+                        remText = 'Unlimited';
+                    }
+
+                    var tr = document.createElement('tr');
+                    tr.innerHTML =
+                        '<td style="padding:6px 8px;">' + escapeHtml(user.Name) + '</td>' +
+                        '<td style="padding:6px 8px;">' +
+                            '<input type="number" min="-1" class="userLimitInput emby-input" ' +
+                            '       data-userid="' + user.Id + '" ' +
+                            '       data-username="' + escapeHtml(user.Name) + '" ' +
+                            '       value="' + limitMin + '" style="width:80px;" />' +
+                        '</td>' +
+                        '<td style="padding:6px 8px;" data-used-userid="' + user.Id + '">' + formatDuration(usedSec) + '</td>' +
+                        '<td style="padding:6px 8px;" data-rem-userid="'  + user.Id + '">' + remText + '</td>' +
+                        '<td style="padding:6px 8px;">' +
+                            '<button type="button" class="resetUserBtn raised emby-button" ' +
+                            '        data-userid="' + user.Id + '">Reset</button>' +
+                        '</td>';
+                    tbody.appendChild(tr);
+                });
+
+                // Wire up reset buttons
+                tbody.querySelectorAll('.resetUserBtn').forEach(function(btn) {
+                    btn.addEventListener('click', function() {
+                        var uid = btn.getAttribute('data-userid');
+                        ApiClient.fetch({
+                            url: ApiClient.getUrl('TimeLimiter/Reset/' + uid),
+                            type: 'POST'
+                        }).then(function() {
+                            refreshStatus();
+                        }).catch(function() {
+                            Dashboard.alert('Reset failed.');
+                        });
+                    });
+                });
+
+                page.querySelector('#refreshStatusBtn').addEventListener('click', refreshStatus);
+            });
+        }
+
+        function savePage(page) {
+            ApiClient.getPluginConfiguration(pluginId).then(function(config) {
+                config.DefaultDailyLimitMinutes = parseInt(
+                    page.querySelector('#defaultDailyLimit').value, 10) || 0;
+
+                var userLimits = [];
+                page.querySelectorAll('.userLimitInput').forEach(function(input) {
+                    userLimits.push({
+                        UserId: input.getAttribute('data-userid'),
+                        UserName: input.getAttribute('data-username'),
+                        DailyLimitMinutes: parseInt(input.value, 10)
+                    });
+                });
+                config.UserLimits = userLimits;
+
+                ApiClient.updatePluginConfiguration(pluginId, config).then(function() {
+                    Dashboard.processPluginConfigurationUpdateResult();
+                });
+            });
+        }
+
+        document.querySelector('#TimeLimiterConfigPage').addEventListener('pageshow', function() {
+            loadPage(this);
+        });
+
+        document.querySelector('#TimeLimiterConfigPage').addEventListener('pagehide', function() {});
+
+        document.querySelector('#TimeLimiterConfigForm').addEventListener('submit', function(e) {
+            e.preventDefault();
+            savePage(document.querySelector('#TimeLimiterConfigPage'));
+        });
+    }());
+    </script>
+</div>
+</body>
+</html>
