@@ -131,7 +131,7 @@ public class PlaytimeTrackerService
     }
 
     /// <summary>
-    /// Returns true if the user is within the 5-minute warning threshold based on completed seconds.
+    /// Returns true if the user is within the 5-minute warning threshold based on total seconds (completed + active).
     /// </summary>
     public bool IsNearLimit(Guid userId)
     {
@@ -141,8 +141,8 @@ public class PlaytimeTrackerService
             return false;
         }
 
-        var completed = GetCompletedSecondsToday(userId);
-        var remaining = limitSeconds - completed;
+        var total = GetTotalSecondsToday(userId);
+        var remaining = limitSeconds - total;
         return remaining > 0 && remaining <= WarnThresholdSeconds;
     }
 
@@ -293,19 +293,24 @@ public class PlaytimeTrackerService
     /// </summary>
     public void Save()
     {
+        string json;
         lock (_lock)
         {
-            try
-            {
-                var dir = Path.GetDirectoryName(DataFilePath)!;
-                Directory.CreateDirectory(dir);
-                var json = JsonSerializer.Serialize(_data, new JsonSerializerOptions { WriteIndented = true });
-                File.WriteAllText(DataFilePath, json);
-            }
-            catch (Exception ex)
-            {
-                _logger.LogError(ex, "TimeLimiter: failed to save playtime data");
-            }
+            json = JsonSerializer.Serialize(_data, new JsonSerializerOptions { WriteIndented = true });
+        }
+
+        try
+        {
+            var path = DataFilePath;
+            var dir = Path.GetDirectoryName(path)!;
+            Directory.CreateDirectory(dir);
+            var tmp = path + ".tmp";
+            File.WriteAllText(tmp, json);
+            File.Move(tmp, path, overwrite: true);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "TimeLimiter: failed to save playtime data");
         }
     }
 

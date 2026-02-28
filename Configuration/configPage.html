@@ -59,6 +59,7 @@
         'use strict';
 
         var pluginId = 'a8b3c2d1-e4f5-6789-abcd-ef0123456789';
+        var refreshListenerAttached = false;
 
         function formatDuration(seconds) {
             if (seconds < 0) return 'Unlimited';
@@ -106,7 +107,7 @@
                 var statusList = results[1];
                 var allUsers   = results[2];
 
-                page.querySelector('#defaultDailyLimit').value = config.DefaultDailyLimitMinutes || 120;
+                page.querySelector('#defaultDailyLimit').value = config.DefaultDailyLimitMinutes ?? 120;
 
                 // Build maps
                 var statusMap = {};
@@ -147,7 +148,7 @@
                             '<span style="display:inline-flex; align-items:center; gap:6px;">' +
                             '<input type="number" min="-1" class="userLimitInput emby-input" ' +
                             '       data-userid="' + user.Id + '" ' +
-                            '       data-username="' + escapeHtml(user.Name) + '" ' +
+                            '       data-username="' + user.Name + '" ' +
                             '       value="' + limitMin + '" style="width:80px;" />' +
                             '<span>min</span>' +
                             '</span>' +
@@ -176,21 +177,24 @@
                     });
                 });
 
-                page.querySelector('#refreshStatusBtn').addEventListener('click', refreshStatus);
+                if (!refreshListenerAttached) {
+                    page.querySelector('#refreshStatusBtn').addEventListener('click', refreshStatus);
+                    refreshListenerAttached = true;
+                }
             });
         }
 
         function savePage(page) {
             ApiClient.getPluginConfiguration(pluginId).then(function(config) {
-                config.DefaultDailyLimitMinutes = parseInt(
-                    page.querySelector('#defaultDailyLimit').value, 10) || 0;
+                var parsedDefault = parseInt(page.querySelector('#defaultDailyLimit').value, 10);
+                config.DefaultDailyLimitMinutes = isNaN(parsedDefault) ? 0 : parsedDefault;
 
                 var userLimits = [];
                 page.querySelectorAll('.userLimitInput').forEach(function(input) {
                     userLimits.push({
                         UserId: input.getAttribute('data-userid'),
                         UserName: input.getAttribute('data-username'),
-                        DailyLimitMinutes: parseInt(input.value, 10)
+                        DailyLimitMinutes: (function() { var v = parseInt(input.value, 10); return isNaN(v) ? -1 : v; })()
                     });
                 });
                 config.UserLimits = userLimits;

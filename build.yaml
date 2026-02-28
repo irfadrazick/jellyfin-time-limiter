@@ -7,7 +7,7 @@ owner: "Jellyfin Community"
 category: "General"
 artifacts:
   - "Jellyfin.Plugin.TimeLimiter.dll"
-targetAbi: "10.9.0.0"
+targetAbi: "10.11.0.0"
 framework: "net9.0"
 sourceUrl: ""
 changelog: "Initial release."
