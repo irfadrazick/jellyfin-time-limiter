@@ -146,7 +146,7 @@ public class PlaytimeTrackerService
 
         var total = GetTotalSecondsToday(userId);
         var remaining = limitSeconds - total;
-        return remaining > 0 && remaining <= WarnThresholdSeconds;
+        return remaining > 0 && remaining < WarnThresholdSeconds;
     }
 
     /// <summary>
