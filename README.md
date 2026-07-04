@@ -226,7 +226,7 @@ The log format includes: username, watch time, limit, access status, and whether
 
 - Store API tokens securely (consider using a secrets manager)
 - Use HTTPS if your Jellyfin server supports it (update `JELLYFIN_BASE_URL`)
-- The script uses `verify=False` for SSL certificates - consider using proper certificates in production
+- The script disables TLS certificate verification (`cert_reqs="CERT_NONE"`) to support self-signed servers - consider using proper certificates in production
 - Limit API token permissions if possible
 
 ## License
