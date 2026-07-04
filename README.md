@@ -15,13 +15,11 @@ This command-line version was built based on the idea from https://github.com/Jo
 
 ## Prerequisites
 
-### Required Jellyfin Plugin
+### Jellyfin
 
-**Playback Reporting Plugin** must be installed and enabled in your Jellyfin server. This plugin provides the playback activity data that the script uses to calculate watch time.
+No plugins required — the script uses only the Jellyfin core API (`/Sessions`, `/Users`). The API token must belong to an administrator so it can read sessions and update user policy.
 
-1. Go to Dashboard → Plugins
-2. Install "Playback Reporting" plugin if not already installed
-3. Ensure the plugin is enabled
+> Note: watch time is now measured by polling live playback sessions on each run, so the script must run on a schedule (e.g. cron every 5 minutes) for accurate accounting. Earlier versions depended on the Playback Reporting plugin; that dependency has been removed.
 
 ### Python Dependencies
 
@@ -171,30 +169,27 @@ sudo systemctl start jellyfin-time-limiter.timer
 
 ## How It Works
 
-1. **Fetches User Information**: Retrieves the user ID for the specified username
-2. **Queries Playback Activity**: Uses the Playback Reporting plugin's custom query API to get today's playback activity
-3. **Calculates Watch Time**: Sums up all `PlayDuration` values from today's records
-4. **Compares Against Limit**: Checks if total watch time exceeds the configured limit
-5. **Updates Policy**:
+1. **Fetches User Information**: Retrieves the user ID for the specified username (needed to update the user policy).
+2. **Loads Daily State**: Reads `jellyfin_time_limiter_state.json`. If the stored date is not today, the tally resets to zero (daily midnight reset, based on the local time of the system running the script).
+3. **Polls Live Sessions**: Calls `GET /Sessions` and, for each active and unpaused session belonging to the monitored user, measures how far the playhead advanced since the previous run. The increment is `clamp(position_delta, 0, wall_clock_gap)` — so paused/idle time counts as nothing, rewinds are ignored, and seeks/fast-forwards can't add more than the real elapsed time.
+4. **Accumulates Watch Time**: Adds those increments to today's running total and saves the updated state (written atomically).
+5. **Compares Against Limit**: Checks if the accumulated total exceeds the configured limit.
+6. **Updates Policy**:
    - If watch time exceeds limit: Disables library access (`EnableAllFolders = False`, `EnabledFolders = []`)
    - If watch time is within limit: Enables library access (`EnableAllFolders = True`)
    - Only updates if the current policy state differs from desired state
 
+### State File
+
+The script tracks watch time in `jellyfin_time_limiter_state.json` in the script directory. It holds the current day, the accumulated seconds, and a per-session anchor (last item and playhead position) used to compute the next increment. **Deleting this file resets today's tally to zero.** It is git-ignored.
+
 ## Error Handling Behavior
 
-The script uses a **fail-permissive** approach for errors to prevent unnecessary access restrictions:
+- **Sessions API Unavailable / Unparseable**: If `GET /Sessions` fails or returns malformed data, the script does **not** change the running total and does **not** discard its per-session anchors. It simply evaluates access against whatever total it already has and retries on the next run. Temporary errors therefore neither lose watch time nor wrongly lock users out.
 
-- **API Unavailable**: If the activity API call fails (e.g., server down, network error), access is **enabled** by default. The script will retry on the next run (every 5 minutes), so temporary errors won't lock users out unnecessarily.
+- **No Active Playback**: When the user isn't playing anything, nothing is added — the total stays where it is (0 at the start of a day), so access remains enabled until the limit is reached.
 
-- **Empty Results (No Activity)**: When there's no playback activity recorded for today, access is **enabled** (0 minutes is always within any limit). This is expected behavior for users who haven't watched anything.
-
-- **Response Parsing Errors**: If the API response format is unexpected (e.g., missing columns, malformed data), access is **disabled** by default to err on the side of caution, and errors are logged for investigation.
-
-This approach ensures that:
-- Temporary API failures don't block legitimate access
-- Users aren't locked out due to plugin/API issues
-- Actual watch time limits are still enforced when data is available
-- Parsing errors are handled conservatively to prevent unintended access
+- **Enforcement Requires the Scheduler**: Because accounting is incremental across runs, watch time is only counted while the script runs on its schedule. If the scheduler is stopped, no time accrues and no limit is enforced.
 
 ## Logging
 
@@ -209,23 +204,23 @@ The log format includes: username, watch time, limit, access status, and whether
 
 ## Troubleshooting
 
-### "PlayDuration column not found in response"
-- Ensure the Playback Reporting plugin is installed and enabled
-- Check that the plugin has recorded some playback activity
+### Watch time always reads 0 / limit never triggers
+- Confirm the script is actually running on a schedule (cron/systemd timer). Accounting is incremental — a single manual run only captures the playback between the two most recent runs.
+- Check that the schedule interval is short enough (5 minutes is recommended) so playback is sampled while it's happening.
+- Make sure `jellyfin_time_limiter_state.json` is writable and not being deleted between runs.
 
 ### "User not found"
 - Verify the `JELLYFIN_USER_NAME` matches exactly (case-sensitive)
 - Check that the user exists in your Jellyfin server
 
-### "Error fetching users" or "Error fetching activity data"
+### "Error fetching users" or "Could not fetch sessions"
 - Verify `JELLYFIN_BASE_URL` is correct and accessible
-- Check that `JELLYFIN_TOKEN` is valid and has appropriate permissions
+- Check that `JELLYFIN_TOKEN` is valid and belongs to an administrator
 - Ensure the Jellyfin server is running and accessible
 
-### No activity found for today
-- This is normal if the user hasn't watched anything today
-- The script will enable access (0 minutes < limit)
-- Watch time resets at midnight local time
+### Watch time seems too low
+- Time is only counted while the scheduler runs. Playback that starts and stops entirely between two runs may be under-counted by up to one interval.
+- Watch time resets at midnight local time of the host running the script.
 
 ## Security Notes
 
