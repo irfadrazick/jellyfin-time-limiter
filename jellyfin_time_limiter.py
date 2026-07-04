@@ -3,8 +3,9 @@
 import urllib3
 import json
 import sys
-from datetime import datetime
 import os
+import tempfile
+from datetime import datetime
 
 JELLYFIN_MAX_WATCH_TIME_MINUTES = int(
     os.getenv("JELLYFIN_MAX_WATCH_TIME_MINUTES", "90")
@@ -12,6 +13,9 @@ JELLYFIN_MAX_WATCH_TIME_MINUTES = int(
 USER_NAME = os.getenv("JELLYFIN_USER_NAME")
 JELLYFIN_BASE_URL = os.getenv("JELLYFIN_BASE_URL", "http://localhost:8096")
 JELLYFIN_TOKEN = os.getenv("JELLYFIN_TOKEN")
+
+# Ticks in Jellyfin are 100-nanosecond units (10,000,000 per second).
+TICKS_PER_SECOND = 10_000_000
 
 # Validate required environment variables
 
@@ -27,9 +31,10 @@ if not USER_NAME:
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 http = urllib3.PoolManager(cert_reqs="CERT_NONE")
 
-# Get script directory and log file path
+# Get script directory and file paths
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 LOG_FILE = os.path.join(SCRIPT_DIR, "jellyfin_time_limiter.log")
+STATE_FILE = os.path.join(SCRIPT_DIR, "jellyfin_time_limiter_state.json")
 
 # Cache last log message to avoid repeated file reads
 _last_log_message = None
@@ -50,9 +55,8 @@ def _get_last_log_message():
                     # Extract message part (everything after timestamp)
                     if "] " in last_line:
                         _last_log_message = last_line.split("] ", 1)[1]
-        except (IOError, IndexError) as e:
+        except (IOError, IndexError):
             # Failure to read the log file is non-fatal; fall back to no cached message.
-            # This allows the script to continue even if the log file is locked or corrupted.
             # The first log entry will be written without deduplication check.
             pass
 
@@ -121,7 +125,50 @@ def parse_json_response(response, context="response", fail_permissive=False):
         sys.exit(1)
 
 
-# Get users
+# Load persisted watch-time state, resetting it when the day rolls over.
+# State shape:
+#   {
+#     "date": "YYYY-MM-DD",            # local day the totals belong to
+#     "total_seconds": float,         # accumulated watch time for that day
+#     "sessions": {                   # per-session anchors from the last poll
+#       "<session_id>": {"item_id": str, "position_ticks": int, "paused": bool}
+#     }
+#   }
+def load_state(today_date):
+    default_state = {"date": today_date, "total_seconds": 0.0, "sessions": {}}
+
+    if not os.path.exists(STATE_FILE):
+        return default_state
+
+    try:
+        with open(STATE_FILE, "r", encoding="utf-8") as f:
+            state = json.load(f)
+    except (IOError, json.JSONDecodeError) as e:
+        # Corrupt/unreadable state should not lock anyone out; start fresh.
+        log(f"Warning: could not read state file ({e}); starting a new day")
+        return default_state
+
+    # Reset accumulated time once the local date changes (daily midnight reset).
+    if state.get("date") != today_date:
+        return default_state
+
+    state.setdefault("total_seconds", 0.0)
+    state.setdefault("sessions", {})
+    return state
+
+
+# Persist state atomically so a crash mid-write can't corrupt the running tally.
+def save_state(state):
+    try:
+        fd, tmp_path = tempfile.mkstemp(dir=SCRIPT_DIR, prefix=".state-", suffix=".tmp")
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            json.dump(state, f)
+        os.replace(tmp_path, STATE_FILE)
+    except IOError as e:
+        log(f"Warning: could not write state file ({e}); today's tally may not persist")
+
+
+# Find target user ID (needed for the policy endpoints)
 response = make_request("GET", "/Users")
 
 if response.status != 200:
@@ -141,93 +188,73 @@ if not target_user_id:
     log(f"Error: User '{USER_NAME}' not found")
     sys.exit(1)
 
-# Check user activity from user_usage_stats plugin using custom query
-# Query for today's playback activity only (resets at midnight)
-stamp = int(datetime.now().timestamp() * 1000)
-query_endpoint = f"/user_usage_stats/submit_custom_query?stamp={stamp}"
-
-# Get today's date in YYYY-MM-DD format for explicit date comparison
+# Accumulate today's watch time from live sessions (no plugin required).
+# We compare the playhead position between cron runs and add how far it moved,
+# capped by the wall-clock gap so seeks/fast-forwards can't inflate the tally.
 today_date = datetime.now().strftime("%Y-%m-%d")
+now_epoch = datetime.now().timestamp()
 
-# SQL query to get today's playback activity for target user
-# Using explicit date string to avoid timezone issues with DATE('now')
-sql_query = f"""SELECT ROWID, *
-FROM PlaybackActivity
-WHERE DATE(DateCreated) = '{today_date}'
-AND UserId = '{target_user_id}'
-ORDER BY rowid DESC"""
+state = load_state(today_date)
+prev_sessions = state.get("sessions", {})
+prev_epoch = state.get("last_epoch", now_epoch)
+wall_gap_seconds = max(0.0, now_epoch - prev_epoch)
 
-query_payload = {
-    "CustomQueryString": sql_query,
-    "ReplaceUserId": False,  # We're using UserId in the query, so no need to replace
-}
-
-response = make_request(
-    "POST",
-    query_endpoint,
-    headers={"accept": "application/json"},
-    body=query_payload,
-)
+response = make_request("GET", "/Sessions")
 
 if response.status != 200:
-    log(f"Warning: Could not fetch activity data: {response.status}")
-    log(f"Response: {response.data.decode('utf-8')}")
-    log("API error - defaulting to enabled access (fail-permissive)")
-    ENABLE_ACCESS = True  # Fail-permissive: enable access when API is unavailable
-    total_watch_time_minutes = None
+    # Live session data is unavailable this run. Don't reset anchors and don't
+    # accumulate; just evaluate against whatever total we already have. This is
+    # fail-permissive for transient errors: temporary API hiccups won't wrongly
+    # add or lose watch time, and the next run retries.
+    log(f"Warning: could not fetch sessions: {response.status}")
+    new_sessions = prev_sessions  # preserve anchors for the next successful run
 else:
-    # Parse query results (fail-permissive: enable access on JSON parse error)
-    response_data = parse_json_response(
-        response, context="activity", fail_permissive=True
-    )
-    if response_data is None:
-        ENABLE_ACCESS = True  # Fail-permissive: enable access on JSON parse error
-        total_watch_time_minutes = None
+    sessions = parse_json_response(response, context="sessions", fail_permissive=True)
+    if sessions is None:
+        new_sessions = prev_sessions
     else:
-        # Response format: {'colums': [...], 'results': [[...], [...]], 'message': ''}
-        columns = response_data.get("colums", [])  # Note: typo in API response
-        results = response_data.get("results", [])
+        new_sessions = {}
+        for session in sessions:
+            # Only the monitored user, and only sessions actively playing an item.
+            if session.get("UserId") != target_user_id:
+                continue
+            now_playing = session.get("NowPlayingItem")
+            play_state = session.get("PlayState") or {}
+            position_ticks = play_state.get("PositionTicks")
+            if not now_playing or position_ticks is None:
+                continue
 
-        # Handle empty results (no activity today)
-        if not results:
-            total_watch_time_seconds = 0
-            total_watch_time_minutes = 0
-            ENABLE_ACCESS = True  # No watch time means access should be enabled
-        elif not columns:
-            log("Error: No columns found in response")
-            log(f"Response structure: {list(response_data.keys())}")
-            ENABLE_ACCESS = False  # Default to disabled if we can't parse
-            total_watch_time_minutes = None
-        else:
-            # Find the index of PlayDuration column
-            try:
-                play_duration_index = columns.index("PlayDuration")
-            except ValueError:
-                log("Error: PlayDuration column not found in response")
-                log(f"Available columns: {columns}")
-                log(f"Response data: {response_data}")
-                ENABLE_ACCESS = False
-                total_watch_time_minutes = None
-            else:
-                # Sum up total watch time for today
-                total_watch_time_seconds = 0
-                for row in results:
-                    if len(row) > play_duration_index:
-                        duration_str = row[play_duration_index]
-                        try:
-                            total_watch_time_seconds += float(duration_str)
-                        except (ValueError, TypeError):
-                            log(
-                                f"Warning: Could not parse duration value: {duration_str}"
-                            )
-                            continue
+            session_id = session.get("Id")
+            item_id = now_playing.get("Id")
+            paused = bool(play_state.get("IsPaused", False))
 
-                total_watch_time_minutes = total_watch_time_seconds / 60
+            prev = prev_sessions.get(session_id)
+            # Only count an interval where the same item was playing and unpaused
+            # at both ends, so paused/idle time contributes nothing.
+            if (
+                prev
+                and prev.get("item_id") == item_id
+                and not paused
+                and not prev.get("paused", False)
+            ):
+                position_delta = (position_ticks - prev.get("position_ticks", 0)) / TICKS_PER_SECOND
+                # Ignore rewinds (negative) and cap forward jumps at real elapsed time.
+                watched = max(0.0, min(position_delta, wall_gap_seconds))
+                state["total_seconds"] += watched
 
-                # Disable access if watch time exceeds limit
-                ENABLE_ACCESS = (
-                    total_watch_time_minutes < JELLYFIN_MAX_WATCH_TIME_MINUTES
-                )
+            new_sessions[session_id] = {
+                "item_id": item_id,
+                "position_ticks": position_ticks,
+                "paused": paused,
+            }
+
+state["date"] = today_date
+state["last_epoch"] = now_epoch
+state["sessions"] = new_sessions
+save_state(state)
+
+total_watch_time_minutes = state["total_seconds"] / 60
+ENABLE_ACCESS = total_watch_time_minutes < JELLYFIN_MAX_WATCH_TIME_MINUTES
 
 # Get current user policy to check if update is needed
 user_endpoint = f"/Users/{target_user_id}"
@@ -277,9 +304,7 @@ if needs_update:
         sys.exit(1)
 
 # Single line log with all information
-watch_time_str = (
-    f"{total_watch_time_minutes:.1f}" if total_watch_time_minutes is not None else "?"
-)
+watch_time_str = f"{total_watch_time_minutes:.1f}"
 action = "enabled" if ENABLE_ACCESS else "disabled"
 change_status = "changed" if needs_update else "unchanged"
 log(

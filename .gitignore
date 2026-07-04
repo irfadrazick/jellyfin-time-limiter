@@ -1,2 +1,5 @@
 
 *.log
+jellyfin_time_limiter_state.json
+.state-*.tmp
+__pycache__/
